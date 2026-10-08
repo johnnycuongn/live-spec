@@ -5,6 +5,7 @@
 //! unit-testable with plain `cargo test` and reusable from a CLI later.
 
 pub mod error;
+pub mod jev;
 pub mod llm;
 pub mod local;
 pub mod project;
