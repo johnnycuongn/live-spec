@@ -2,6 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::jev::DEFAULT_MODEL;
 use crate::Result;
 
 /// Which model answers. Fast = live analysis while typing; Deep = project brief.
@@ -41,6 +42,7 @@ pub struct Settings {
     pub provider: ProviderSettings,
     /// Idle time after typing before the notes re-think.
     pub debounce_ms: u64,
+    pub jev: JevSettings,
 }
 
 impl Default for Settings {
@@ -53,7 +55,28 @@ impl Default for Settings {
                 deep_model: "sonnet".into(),
             },
             debounce_ms: 1200,
+            jev: JevSettings::default(),
         }
+    }
+}
+
+/// Which Jev judgments run. They only run when a TypeSafe key is found.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct JevSettings {
+    /// Skip re-analysis when an edit doesn't change the idea.
+    pub gate: bool,
+    /// Rerank the keyword shortlist of code snippets.
+    pub rerank: bool,
+    /// Fact-check the Faults against the code.
+    pub check: bool,
+    /// Pin a versioned ID (e.g. `jev-1.13.0`) once thresholds are tuned.
+    pub model: String,
+}
+
+impl Default for JevSettings {
+    fn default() -> Self {
+        Self { gate: true, rerank: true, check: true, model: DEFAULT_MODEL.into() }
     }
 }
 
@@ -88,11 +111,22 @@ mod tests {
         let path = dir.path().join("settings.json");
         assert_eq!(Settings::load(&path), Settings::default());
 
-        let s = Settings { provider: ProviderSettings::Local { model_id: "qwen3-4b".into() }, debounce_ms: 900 };
+        let s = Settings { provider: ProviderSettings::Local { model_id: "qwen3-4b".into() }, debounce_ms: 900, ..Default::default() };
         s.save(&path).unwrap();
         assert_eq!(Settings::load(&path), s);
 
         std::fs::write(&path, "{nope").unwrap();
         assert_eq!(Settings::load(&path), Settings::default());
+    }
+
+    #[test]
+    fn files_from_before_jev_get_its_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"provider":{"kind":"local","modelId":"qwen3-4b"},"debounceMs":900}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.debounce_ms, 900);
+        assert_eq!(s.jev, JevSettings::default());
+        assert!(s.jev.check && s.jev.model == "jev-latest");
     }
 }

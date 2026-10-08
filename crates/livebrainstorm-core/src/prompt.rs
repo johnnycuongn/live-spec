@@ -107,6 +107,50 @@ pub fn analysis_request(
     }
 }
 
+/// Which of `SECTIONS` a heading line opens, as tolerant as
+/// `src/lib/sections.ts`: "## Faults", "### Questions for you", "**Faults:**".
+fn heading_key(line: &str) -> Option<&'static str> {
+    let t = line.trim_start();
+    let rest = match t.strip_prefix("**") {
+        Some(rest) => rest,
+        None => {
+            let hashes = t.len() - t.trim_start_matches('#').len();
+            if !(1..=4).contains(&hashes) {
+                return None;
+            }
+            &t[hashes..]
+        }
+    };
+    let word = rest.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next()?.to_lowercase();
+    SECTIONS.iter().copied().find(|s| {
+        let s = s.to_lowercase();
+        word == s || word == s.trim_end_matches('s')
+    })
+}
+
+/// The body under one section heading (e.g. "Faults"), if present. Mirrors
+/// `parseSections` in `src/lib/sections.ts`; keep the two in sync.
+pub fn section_body(markdown: &str, name: &str) -> Option<String> {
+    let mut body: Option<String> = None;
+    let mut current = None;
+    for line in markdown.lines() {
+        if let Some(key) = heading_key(line) {
+            current = Some(key);
+            if key == name {
+                body.get_or_insert_with(String::new);
+            }
+            continue;
+        }
+        if current == Some(name) {
+            if let Some(b) = body.as_mut() {
+                b.push_str(line);
+                b.push('\n');
+            }
+        }
+    }
+    body.map(|b| b.trim().to_owned())
+}
+
 /// Very long drafts: keep the opening (the framing) and the tail (where the
 /// user is typing now), drop the middle.
 fn shape_draft(draft: &str) -> String {
@@ -155,5 +199,13 @@ mod tests {
         for s in SECTIONS {
             assert!(req.system.contains(&format!("## {s}")));
         }
+    }
+
+    #[test]
+    fn section_body_matches_the_ui_parser() {
+        let md = "## Intent\n- add caching\n## Faults\n- `cache.ts` exists\n- second\n## Directions\n- reuse it";
+        assert_eq!(section_body(md, "Faults").as_deref(), Some("- `cache.ts` exists\n- second"));
+        assert_eq!(section_body("**Faults:**\n- x\n### Questions for you\n- y", "Faults").as_deref(), Some("- x"));
+        assert_eq!(section_body("Sure, here you go\n## Intent\n- a", "Faults"), None);
     }
 }

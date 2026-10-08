@@ -12,6 +12,7 @@ thiserror = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 ignore = "0.4"
+dotenvy = "0.15"
 flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
