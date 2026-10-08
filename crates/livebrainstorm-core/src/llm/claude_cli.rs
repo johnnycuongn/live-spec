@@ -17,9 +17,9 @@ use tokio::process::Command;
 use super::{ChatRequest, Chunk, OnChunk};
 use crate::{Error, Result};
 
-const READ_ONLY_TOOLS: [&str; 3] = ["Read", "Glob", "Grep"];
-const MUTATING_TOOLS: [&str; 7] =
-    ["Bash", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task"];
+/// The only tools a brief explorer gets. An allowlist (`--tools`), not a
+/// denylist, so tools added to future Claude Code versions stay unavailable.
+const READ_ONLY_TOOLS: &str = "Read,Glob,Grep";
 
 #[derive(Debug, Clone)]
 pub struct ClaudeCli {
@@ -28,6 +28,29 @@ pub struct ClaudeCli {
     pub model: String,
     /// PATH for the child process (see `shell_env`).
     pub path_env: Option<String>,
+}
+
+/// Flags for one `claude -p` run. Opened projects may be untrusted clones,
+/// so `--restricted` ignores settings files (no project hooks), confines file
+/// tools to the project and refuses bypassPermissions, and
+/// `--strict-mcp-config` without `--mcp-config` starts no MCP servers.
+fn args(model: &str, req: &ChatRequest) -> Vec<String> {
+    let mut a: Vec<String> = [
+        "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+        "--model", model, "--restricted", "--strict-mcp-config",
+    ]
+    .map(String::from)
+    .to_vec();
+    if req.allow_repo_tools {
+        // Keep Claude Code's own system prompt: it knows how to explore repos.
+        a.extend(["--append-system-prompt", req.system.as_str(), "--max-turns", "40"].map(String::from));
+        a.extend(["--tools", READ_ONLY_TOOLS, "--allowedTools", READ_ONLY_TOOLS].map(String::from));
+    } else {
+        // Live analysis: replace the system prompt, single turn, no tools at all.
+        // Smaller prompt = faster first token while the user types.
+        a.extend(["--system-prompt", req.system.as_str(), "--max-turns", "1", "--tools", ""].map(String::from));
+    }
+    a
 }
 
 impl ClaudeCli {
@@ -51,21 +74,7 @@ impl ClaudeCli {
 
     pub async fn stream(&self, req: &ChatRequest, on_chunk: OnChunk<'_>) -> Result<String> {
         let mut cmd = self.command();
-        cmd.arg("-p")
-            .args(["--output-format", "stream-json", "--verbose", "--include-partial-messages"])
-            .args(["--model", &self.model]);
-
-        if req.allow_repo_tools {
-            // Keep Claude Code's own system prompt: it knows how to explore repos.
-            cmd.arg("--append-system-prompt").arg(&req.system).args(["--max-turns", "40"]);
-            cmd.arg("--allowedTools").args(READ_ONLY_TOOLS);
-            cmd.arg("--disallowedTools").args(MUTATING_TOOLS);
-        } else {
-            // Live analysis: replace the system prompt, single turn, no tools.
-            // Smaller prompt = faster first token while the user types.
-            cmd.arg("--system-prompt").arg(&req.system).args(["--max-turns", "1"]);
-            cmd.arg("--disallowedTools").args(MUTATING_TOOLS).args(READ_ONLY_TOOLS);
-        }
+        cmd.args(args(&self.model, req));
         if let Some(cwd) = &req.cwd {
             cmd.current_dir(cwd);
         }
@@ -130,6 +139,9 @@ impl ClaudeCli {
 }
 
 fn cli_error(result_text: Option<&str>, stderr: &str) -> String {
+    if stderr.contains("unknown option") {
+        return "Claude Code is too old for LiveBrainstorm's restricted mode. Update it with `claude update`.".into();
+    }
     let detail = result_text.filter(|t| !t.trim().is_empty()).unwrap_or(stderr).trim();
     let detail = if detail.is_empty() { "no output" } else { detail };
     format!("Claude Code failed: {}", detail.chars().take(500).collect::<String>())
@@ -204,5 +216,39 @@ mod tests {
     fn ignores_noise() {
         assert!(parse_line("not json").is_empty());
         assert!(parse_line(r#"{"type":"system","subtype":"init"}"#).is_empty());
+    }
+
+    fn request(allow_repo_tools: bool) -> ChatRequest {
+        ChatRequest { system: "sys".into(), user: "u".into(), max_tokens: 900, cwd: None, allow_repo_tools }
+    }
+
+    fn after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+        args.iter().position(|a| a == flag).map(|i| args[i + 1].as_str())
+    }
+
+    #[test]
+    fn analysis_runs_with_no_tools_and_no_workspace_config() {
+        let a = args("haiku", &request(false));
+        assert_eq!(after(&a, "--tools"), Some(""));
+        assert_eq!(after(&a, "--system-prompt"), Some("sys"));
+        assert_eq!(after(&a, "--max-turns"), Some("1"));
+        assert!(a.contains(&"--restricted".into()) && a.contains(&"--strict-mcp-config".into()));
+        assert!(!a.iter().any(|x| x.contains("disallowed") || x.contains("Bash")));
+    }
+
+    #[test]
+    fn brief_explorers_only_get_read_only_tools() {
+        let a = args("sonnet", &request(true));
+        assert_eq!(after(&a, "--tools"), Some("Read,Glob,Grep"));
+        assert_eq!(after(&a, "--allowedTools"), Some("Read,Glob,Grep"));
+        assert_eq!(after(&a, "--append-system-prompt"), Some("sys"));
+        assert_eq!(after(&a, "--model"), Some("sonnet"));
+        assert!(a.contains(&"--restricted".into()) && a.contains(&"--strict-mcp-config".into()));
+    }
+
+    #[test]
+    fn an_old_cli_gets_an_update_hint() {
+        assert!(cli_error(None, "error: unknown option '--restricted'").contains("claude update"));
+        assert_eq!(cli_error(Some("boom"), ""), "Claude Code failed: boom");
     }
 }
