@@ -81,6 +81,13 @@ impl Default for JevSettings {
 }
 
 impl Settings {
+    /// Whether the Faults may be fact-checked by Jev. That sends claims and
+    /// code excerpts to TypeSafe, so the Local option ("private and offline")
+    /// never does, whatever the switch says.
+    pub fn jev_check_enabled(&self) -> bool {
+        self.jev.check && !matches!(self.provider, ProviderSettings::Local { .. })
+    }
+
     /// Missing or corrupt files fall back to defaults instead of blocking startup.
     pub fn load(path: &Path) -> Self {
         std::fs::read(path)
@@ -128,5 +135,16 @@ mod tests {
         assert_eq!(s.debounce_ms, 900);
         assert_eq!(s.jev, JevSettings::default());
         assert!(s.jev.check && s.jev.model == "jev-latest");
+    }
+
+    #[test]
+    fn local_models_never_send_code_to_jev() {
+        let mut s = Settings::default();
+        assert!(s.jev_check_enabled());
+        s.provider = ProviderSettings::Local { model_id: "qwen3-4b-instruct".into() };
+        assert!(!s.jev_check_enabled(), "the Local option promises nothing leaves this computer");
+        s.provider = Settings::default().provider;
+        s.jev.check = false;
+        assert!(!s.jev_check_enabled());
     }
 }

@@ -26,7 +26,13 @@ With a [TypeSafe](https://typesafe.ai) API key, LiveBrainstorm checks every Faul
 
     TYPESAFE_API_KEY=your-key
 
+Checking sends each Fault and a short excerpt of the code it names to TypeSafe. It never runs with the Local model option, which promises nothing leaves your computer.
+
 Development builds read it on each analysis, so edits apply without a restart. Packaged builds ignore `.env.local`; set `TYPESAFE_API_KEY` in the environment instead.
+
+### Requirements for the Claude subscription option
+
+LiveBrainstorm runs Claude Code in restricted mode (`--restricted`, so a project you open can't run its own hooks or servers). That mode ignores every Claude Code settings file, including your own `~/.claude/settings.json`, so authentication must come from your normal Claude Code login or from environment variables. Setups that depend on `apiKeyHelper` or an `env` block in settings (Bedrock, Vertex, a proxy base URL) need those exported in the environment instead. It also needs a Claude Code version that supports `--restricted`; if yours is older, update it with `claude update`.
 
 ## How it works
 

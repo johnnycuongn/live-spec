@@ -208,7 +208,7 @@ pub async fn analyze(app: AppHandle, draft: String, on_event: Channel<UiEvent>) 
 
         // "Checked in code" fills in after the notes. The next keystroke
         // aborts this task, checks included.
-        if !state.settings().jev.check {
+        if !state.settings().jev_check_enabled() {
             return;
         }
         if let (Some(index), Some(faults)) = (index, prompt::section_body(&text, "Faults")) {

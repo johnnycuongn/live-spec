@@ -22,6 +22,9 @@ pub const JEV_CONCURRENCY: usize = 8;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const EVIDENCE_CHARS: usize = 1_500;
 const MIN_SPAN_CHARS: usize = 3;
+/// A name found in more files than this never counts as specific, however
+/// large the repo.
+const MAX_SPECIFIC_FILES: usize = 8;
 /// Extensions that make a backticked span a file path: `cart.ts` is a file,
 /// `state.local` is code.
 const SOURCE_EXTS: &[&str] = &[
@@ -111,31 +114,65 @@ fn strip_line_suffix(s: &str) -> &str {
     }
 }
 
+/// A backticked span that reads as a file path: has a `/` or a known source
+/// extension, and no spaces, quotes or parentheses (`app.get('/')` is code).
 fn is_path(span: &str) -> bool {
-    span.contains('/') || span.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && SOURCE_EXTS.contains(&ext))
+    let plain = !span.contains(|c: char| c.is_whitespace() || matches!(c, '\'' | '"' | '(' | ')'));
+    plain && (span.contains('/') || span.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && SOURCE_EXTS.contains(&ext)))
+}
+
+/// `rel` is `span` or ends with `/span`: whole path segments, so `cart.ts`
+/// doesn't match `minicart.ts`.
+fn path_matches(rel: &str, span: &str) -> bool {
+    rel == span || rel.strip_suffix(span).is_some_and(|head| head.ends_with('/'))
+}
+
+fn is_ident_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// `span` occurs in `content` as a whole identifier: `user` is not found in
+/// `userId` or `username`.
+fn contains_ident(content: &str, span: &str) -> bool {
+    content.match_indices(span).any(|(at, _)| {
+        let before = content[..at].chars().next_back();
+        let after = content[at + span.len()..].chars().next();
+        !before.is_some_and(is_ident_char) && !after.is_some_and(is_ident_char)
+    })
+}
+
+/// One backticked name from a claim and the files it was found in.
+struct Span {
+    text: String,
+    hits: Vec<usize>,
+    /// Matched as a file path, rather than as a name in file contents.
+    is_file: bool,
 }
 
 /// Finds the code a claim refers to, with no model involved.
 pub fn locate_evidence(index: &ProjectIndex, claim: &str) -> Evidence {
-    // A name found in more files than this is too generic to point anywhere.
-    let generic_above = (index.files.len() / 4).max(3);
-    let mut spans: Vec<(String, Vec<usize>)> = Vec::new();
-    for span in code_spans(claim) {
-        let path = is_path(&span);
-        let hits: Vec<usize> = (0..index.files.len())
-            .filter(|&i| {
-                let f = &index.files[i];
-                if path { f.rel.ends_with(span.as_str()) } else { f.content.contains(span.as_str()) }
-            })
-            .collect();
-        if path || hits.len() <= generic_above {
-            spans.push((span, hits));
+    // A name found in more files than this is too generic to point anywhere:
+    // a quarter of the repo, but never more than MAX_SPECIFIC_FILES.
+    let generic_above = (index.files.len() / 4).clamp(2, MAX_SPECIFIC_FILES);
+    let mut spans: Vec<Span> = Vec::new();
+    for text in code_spans(claim) {
+        if is_path(&text) {
+            let hits: Vec<usize> = (0..index.files.len()).filter(|&i| path_matches(&index.files[i].rel, &text)).collect();
+            if !hits.is_empty() {
+                spans.push(Span { text, hits, is_file: true });
+                continue;
+            }
+        }
+        // Not a file (or no such file): `res.json` and `state.local` are code.
+        let hits: Vec<usize> = (0..index.files.len()).filter(|&i| contains_ident(&index.files[i].content, &text)).collect();
+        if hits.len() <= generic_above {
+            spans.push(Span { text, hits, is_file: false });
         }
     }
     if spans.is_empty() {
         return Evidence::Uncheckable;
     }
-    let mut candidates: Vec<usize> = spans.iter().flat_map(|(_, hits)| hits.iter().copied()).collect();
+    let mut candidates: Vec<usize> = spans.iter().flat_map(|s| s.hits.iter().copied()).collect();
     candidates.sort_unstable();
     candidates.dedup();
 
@@ -152,11 +189,11 @@ pub fn locate_evidence(index: &ProjectIndex, claim: &str) -> Evidence {
 
     let file = &index.files[i];
     let lines: Vec<&str> = file.content.lines().collect();
-    let names: Vec<&str> = spans.iter().filter(|(s, _)| !is_path(s)).map(|(s, _)| s.as_str()).collect();
+    let names: Vec<&str> = spans.iter().filter(|s| !s.is_file).map(|s| s.text.as_str()).collect();
     let (hits, line) = lines
         .iter()
         .enumerate()
-        .map(|(n, l)| (names.iter().filter(|s| l.contains(**s)).count(), n))
+        .map(|(n, l)| (names.iter().filter(|s| contains_ident(l, s)).count(), n))
         .fold((0, 0), |acc, x| if x.0 > acc.0 { x } else { acc });
     let center = if hits > 0 { line } else { best_line(&lines, &weights) };
     Evidence::Found(window(&file.rel, &lines, center, EVIDENCE_CHARS), center + 1)
@@ -392,5 +429,55 @@ mod tests {
         assert!(events(&judge(url.clone()), "- Nothing so far.").await.is_empty());
         assert!(events(&judge(url), "- Totals look fine").await.is_empty());
         assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn a_name_in_a_few_files_of_a_small_repo_is_still_too_generic() {
+        let dir = repo(&[
+            ("a.ts", "const data = 1;\n"),
+            ("b.ts", "const data = 2;\n"),
+            ("c.ts", "const data = 3;\n"),
+            ("d.ts", "export const other = 4;\n"),
+        ]);
+        let idx = scan(dir.path()).unwrap();
+        assert_eq!(locate_evidence(&idx, "`data` is never validated"), Evidence::Uncheckable);
+    }
+
+    #[test]
+    fn a_name_in_many_files_of_a_big_repo_is_too_generic() {
+        let paths: Vec<String> = (0..40).map(|i| format!("src/m{i}.ts")).collect();
+        let bodies: Vec<String> = (0..40)
+            .map(|i| if i < 12 { "const config = load();\n".to_owned() } else { format!("export const v{i} = {i};\n") })
+            .collect();
+        let files: Vec<(&str, &str)> = paths.iter().zip(&bodies).map(|(p, b)| (p.as_str(), b.as_str())).collect();
+        let idx = scan(repo(&files).path()).unwrap();
+        assert_eq!(locate_evidence(&idx, "`config` is read twice"), Evidence::Uncheckable);
+    }
+
+    #[test]
+    fn names_match_whole_identifiers_only() {
+        let dir = repo(&[("a.ts", "const userId = 1;\n"), ("b.ts", "export const other = 2;\n")]);
+        let idx = scan(dir.path()).unwrap();
+        assert_eq!(locate_evidence(&idx, "`user` is never validated"), Evidence::NotFound);
+    }
+
+    #[test]
+    fn code_that_looks_like_a_file_name_is_searched_as_code() {
+        let dir = repo(&[("src/api.ts", "app.get('/'); // res.json({ ok: true })\n"), ("src/b.ts", "export const b = 1;\n")]);
+        let idx = scan(dir.path()).unwrap();
+        for claim in ["`res.json` is called without a status", "`app.get('/')` has no auth"] {
+            let found = locate_evidence(&idx, claim);
+            assert!(matches!(found, Evidence::Found(ref code, 1) if code.path == "src/api.ts"), "{claim}: {found:?}");
+        }
+    }
+
+    #[test]
+    fn a_file_name_matches_whole_path_segments_only() {
+        let dir = repo(&[("src/minicart.ts", "export const mini = 1;\n")]);
+        let idx = scan(dir.path()).unwrap();
+        assert_eq!(locate_evidence(&idx, "`cart.ts` has no removeItem"), Evidence::NotFound);
+        let real = repo(&[("src/cart.ts", "export const cart = 1;\n"), ("src/minicart.ts", "export const mini = 1;\n")]);
+        let idx = scan(real.path()).unwrap();
+        assert!(matches!(locate_evidence(&idx, "`cart.ts` has no removeItem"), Evidence::Found(ref c, _) if c.path == "src/cart.ts"));
     }
 }
