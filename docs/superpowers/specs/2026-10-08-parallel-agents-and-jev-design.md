@@ -317,3 +317,16 @@ AGENTS.md (the agents module, Jev, key lookup and the `VITE_` warning, new event
 - **503 `model_unavailable`** came back on the first call of two early attempts (the key authenticated fine) and cleared within about 20 s. The client now retries 503 like 429/529. Without that, a fact-check would have shown a notice on a transient blip.
 - The single check verdict (`createInvoice` returns `total: 0`, claim "ignores the cart's items") was `supports` at confidence 1.00, as it should be. The gate answered 0.98 for an edit that adds a new idea.
 - Phase 2 sizes `PRE_BUDGET` from these numbers: gate and rerank run concurrently at about 0.3 s each, so the planned 2,000 ms budget leaves wide margin and can be tightened to about 1,000 ms.
+
+## Measurements (phase 2, 2026-10-08)
+
+`cargo test -p livebrainstorm-core --test jev_live pre_phase_on_this_repo -- --ignored --nocapture` on this repo (75 files), `PRE_BUDGET` = 1,500 ms:
+
+| Draft vs previous | Rounds (elapsed, outcome) |
+|---|---|
+| Adds an idea | 1,472 ms, analysed (reranked); 1,212 ms, analysed (reranked); 798 ms, analysed with keyword fallback (a rerank request got TypeSafe 503 `model_unavailable` even after 2 retries, so one notice) |
+| Rewords only | 346 ms, SKIP; 313 ms, SKIP; 633 ms, SKIP |
+
+- Reranked picks: `llm/claude_cli.rs`, `AGENTS.md`, `src-tauri/src/provider.rs`, `src-tauri/src/commands.rs`, `llm/mod.rs`. Keyword order without Jev: the phase 2 plan, the phase 1 plan, `AGENTS.md`, `tests/jev_live.rs`, the spec. The reranked set is clearly more on-topic for a draft about `ClaudeCli::stream`; keyword order favours the Markdown docs that quote those identifiers.
+- `PRE_BUDGET`: kept at 1,500 ms by the plan's rule (no round timed out). But the slowest analysed round finished within 30 ms of the budget, because the 20 rerank requests run in 3 waves of 8. If timeouts show up in use, the cheaper fix is a shorter shortlist or higher rerank concurrency, not a longer budget.
+- One failed request out of 20 discards the whole ranking (by design). With TypeSafe's intermittent 503s that happened in 1 of 3 rounds; the fallback worked as intended.

@@ -7,9 +7,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
+use livebrainstorm_core::analysis::{pre_phase, PreInput, PreOutcome, PRE_BUDGET};
 use livebrainstorm_core::env_file;
-use livebrainstorm_core::jev::{check, Jev, NoulCriteria, Question, DEFAULT_MODEL};
-use livebrainstorm_core::project::Snippet;
+use livebrainstorm_core::jev::{check, gate, Jev, DEFAULT_MODEL};
+use livebrainstorm_core::project::{retrieve, scan, Snippet};
 use serde_json::json;
 
 fn key() -> Option<String> {
@@ -27,16 +28,7 @@ async fn noul_and_choice_round_trip() {
     };
     let jev = Jev::new(key, DEFAULT_MODEL.into(), reqwest::Client::new());
 
-    let gate = BTreeMap::from([(
-        "changed".to_owned(),
-        Question::Noul {
-            instructions: json!("Compared with `previous_draft`, does `current_draft` add, remove, or change an idea, goal, constraint, or question?"),
-            criteria: Some(NoulCriteria {
-                yes: json!("At least one idea, goal, constraint, or question was added, removed, or changed in meaning."),
-                no: json!("Only wording, spelling, punctuation, or formatting changed; the ideas are the same."),
-            }),
-        },
-    )]);
+    let gate = BTreeMap::from([("changed".to_owned(), gate::question())]);
     let drafts = json!({
         "previous_draft": "Cache the project index between launches.",
         "current_draft": "Cache the project index between launches, and keep one brief per git branch."
@@ -63,4 +55,44 @@ async fn noul_and_choice_round_trip() {
         assert!(["supports", "contradicts", "says_nothing"].contains(&choice));
         eprintln!("check choice round {round}: {:>5} ms  {choice} ({confidence:.2})", t.elapsed().as_millis());
     }
+}
+
+#[tokio::test]
+#[ignore = "calls the TypeSafe API"]
+async fn pre_phase_on_this_repo() {
+    let Some(key) = key() else {
+        eprintln!("skipped: no TYPESAFE_API_KEY in the environment or .env.local");
+        return;
+    };
+    let jev = Jev::new(key, DEFAULT_MODEL.into(), reqwest::Client::new());
+    let index = scan(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))).unwrap();
+    let before = "Every pause spawns a fresh claude -p process from ClaudeCli::stream.";
+    let changed = "Every pause spawns a fresh claude -p process from ClaudeCli::stream. I want to keep one process alive, reuse it across analyze calls, and kill it when replace_task aborts the old analysis.";
+    let reworded = "Each pause starts a new claude -p process from ClaudeCli::stream.";
+
+    for (label, current) in [("changed", changed), ("reworded", reworded)] {
+        for round in 1..=3 {
+            let t = Instant::now();
+            let input = PreInput {
+                draft: current,
+                previous_draft: Some(before),
+                index: Some(&index),
+                max_files: 5,
+                budget_chars: 30_000,
+                jev: Some(&jev),
+                gate: true,
+                rerank: true,
+            };
+            match pre_phase(input, PRE_BUDGET).await {
+                PreOutcome::Skip => eprintln!("{label:<9} round {round}: {:>5} ms  SKIP", t.elapsed().as_millis()),
+                PreOutcome::Analyze { snippets, notice } => eprintln!(
+                    "{label:<9} round {round}: {:>5} ms  notice={notice:?}  picked={:?}",
+                    t.elapsed().as_millis(),
+                    snippets.iter().map(|s| s.path.as_str()).collect::<Vec<_>>()
+                ),
+            }
+        }
+    }
+    let keyword: Vec<String> = retrieve(&index, changed, 5, 30_000).into_iter().map(|s| s.path).collect();
+    eprintln!("keyword order (no Jev): {keyword:?}");
 }
