@@ -5,6 +5,7 @@
 
 pub mod check;
 pub mod gate;
+pub mod rerank;
 #[cfg(test)]
 pub(crate) mod test_server;
 
