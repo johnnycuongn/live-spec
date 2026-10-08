@@ -54,7 +54,7 @@ cargo run -p livebrainstorm-core --example probe -- <project-dir> "<draft text>"
 
 1. `src/lib/useLiveAnalysis.ts` waits for a typing pause (`debounceMs`, default 1200). It needs at least 24 characters after whitespace normalization and skips the call if the normalized draft hasn't changed. When the project or brief changes (`contextKey`), it re-sends the same draft.
 2. `analyze` (`src-tauri/src/commands.rs`) returns immediately after spawning a task into the `AppState.analysis` slot. `replace_task` aborts the previous task, and dropping that future kills the `claude` child process (`kill_on_drop`).
-3. The task resolves a provider at `Tier::Fast` (`src-tauri/src/provider.rs`), runs `project::retrieve` (3 or 5 files depending on the provider's budget), builds the prompt with `prompt::analysis_request`, and streams the reply.
+3. The task resolves a provider at `Tier::Fast` (`src-tauri/src/provider.rs`), then runs `analysis::pre_phase`. The Jev gate ("did the idea change since `previousDraft`?") and the Jev rerank (scores the 20-snippet keyword shortlist and keeps the best 3 or 5) run concurrently under `PRE_BUDGET` (1.5 s). A confident "unchanged" emits `skipped` and stops. Otherwise it emits `started`, then at most one pre-phase `notice`, builds the prompt with `prompt::analysis_request` and streams. Without Jev, or for the Local provider, or when Jev is slow or failing, this is plain keyword retrieval (`project::retrieve`).
 4. Results come back as `UiEvent`s (`text` / `activity` / `done` / `error` / `progress`) over a **per-call `Channel`**, so events never cross requests. The frontend also drops stale replies by request id.
 5. `src/lib/sections.ts` splits the streamed Markdown into the four sections, and `MiniMarkdown` renders them.
 
@@ -84,6 +84,8 @@ Brief building (`build_brief`, `Tier::Deep`) and downloads (`install_runtime`, `
 - **Key lookup** (`secrets::jev_key`): Keychain account `typesafe-api-key`, then `TYPESAFE_API_KEY` in the environment, then, in debug builds only, `TYPESAFE_API_KEY` in the repo's `.env.local` (read by `env_file::read_value`, never exported). The key never crosses IPC. **Never prefix it `VITE_`:** Vite reads `.env.local` too and ships `VITE_*` variables to the webview bundle.
 - Jev only runs for the fact-check when `Settings::jev_check_enabled()` is true: never with the Local provider, whatever the switch says (it would send code off the machine).
 - Evidence matching is by whole identifiers and whole path segments; a name found in more than `min(8, files/4)` files (at least 2) is too generic to check.
+- **Gate and rerank** (`jev::gate`, `jev::rerank`, `analysis::pre_phase`): the UI sends the draft of the last *completed* analysis as `previousDraft` (skips never move it; "Try again" sends null). Gate errors mean "analyse"; rerank errors mean keyword order. Neither ever adds more than `PRE_BUDGET` before the model call. Futures awaited inside the shell's spawned task must avoid closures over borrowed arguments (`Option::filter(|_| …)`, `.map(|(i, &x)| …)`): they trip rustc's Send check ("FnOnce is not general enough").
+- `Settings::jev_allowed()` is false for the Local provider; `jev_gate_enabled`, `jev_rerank_enabled` and `jev_check_enabled` all respect it.
 - Jev failures never fail an analysis; they surface as one `notice` event. The client retries 429/503/529 twice.
 - Live test against the real API (needs the key; prints latency): `cargo test -p livebrainstorm-core --test jev_live -- --ignored --nocapture`.
 

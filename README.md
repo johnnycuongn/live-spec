@@ -26,7 +26,7 @@ With a [TypeSafe](https://typesafe.ai) API key, LiveBrainstorm checks every Faul
 
     TYPESAFE_API_KEY=your-key
 
-Checking sends each Fault and a short excerpt of the code it names to TypeSafe. It never runs with the Local model option, which promises nothing leaves your computer.
+With a key, Jev also skips re-analysis when an edit doesn't change the idea, and picks which code snippets the notes model sees. These calls send your draft, each Fault, and short code excerpts to TypeSafe. They never run with the Local model option, which promises nothing leaves your computer.
 
 Development builds read it on each analysis, so edits apply without a restart. Packaged builds ignore `.env.local`; set `TYPESAFE_API_KEY` in the environment instead.
 

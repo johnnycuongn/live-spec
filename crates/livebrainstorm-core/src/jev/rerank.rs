@@ -60,10 +60,12 @@ pub async fn scores(jev: &Jev, draft: &str, candidates: &[Snippet], deadline: In
     let shaped = shape_draft_to(draft, DRAFT_CHARS);
     let questions = BTreeMap::from([("relevant".to_owned(), question())]);
     let (shaped, questions) = (&shaped, &questions);
-    let mut answers = std::pin::pin!(stream::iter(candidates.iter().enumerate())
-        .map(|(i, code)| async move {
+    // Indices, not `&Snippet` items: closures over borrowed items break
+    // rustc's Send check when this runs inside a spawned task.
+    let mut answers = std::pin::pin!(stream::iter(0..candidates.len())
+        .map(|i| async move {
             let timeout = deadline.saturating_duration_since(Instant::now());
-            (i, jev.ask(&state(shaped, code), questions, timeout).await)
+            (i, jev.ask(&state(shaped, &candidates[i]), questions, timeout).await)
         })
         .buffer_unordered(JEV_CONCURRENCY));
     let mut out = vec![0.0; candidates.len()];

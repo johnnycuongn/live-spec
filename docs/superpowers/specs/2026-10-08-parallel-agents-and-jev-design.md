@@ -164,7 +164,7 @@ All questions keep each `state` small and on topic, as Jev's "large irrelevant s
 - Request body: `{"state", "model", "questions": {id: {"type": "noul" | "choice", "instructions", "criteria"}}}`. Response body: `{"model", "answers": {id: {"type", …}}, "usage"}`, as in the API reference.
 - Model: `settings.jev.model`, default `"jev-latest"`. The answering model ID from each response is kept for logging.
 - At most 8 Jev requests in flight (`JEV_CONCURRENCY`), independent of max agents.
-- Timeouts: each request is bounded by the remaining pre-phase budget, or 5 s during the check phase.
+- Timeouts: each request is bounded by the remaining pre-phase budget (`PRE_BUDGET`, 1,500 ms in phase 2: 20 rerank requests at 8 in flight take 3 waves of about 0.3 s; tuned from the phase 2 measurement), or 5 s during the check phase.
 - Retries: on 429, 503 or 529 (503 `model_unavailable` was observed intermittently on the first call in phase 1 measurements), up to 2 retries with 250 ms then 750 ms backoff (or `retry-after`, if shorter than the remaining budget).
 - Errors:
   - 401 → `Error::Precondition("TypeSafe key rejected. Check .env.local or Settings → Jev.")`.

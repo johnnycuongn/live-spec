@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use livebrainstorm_core::analysis::{self, PreInput, PreOutcome, PRE_BUDGET};
 use livebrainstorm_core::jev::check::{self, CheckEvent, CheckResult};
 use livebrainstorm_core::llm::Chunk;
 use livebrainstorm_core::local::{self, catalog, download, runtime, LocalInventory};
@@ -32,6 +33,10 @@ pub enum UiEvent {
     Check(CheckResult),
     /// Non-fatal: the notes are fine, something around them failed.
     Notice { message: String },
+    /// The pre-phase passed: the model call is starting (clear old notes now).
+    Started,
+    /// The gate found no real change: keep the current notes. Final.
+    Skipped,
 }
 
 impl From<CheckEvent> for UiEvent {
@@ -180,35 +185,54 @@ pub async fn build_brief(app: AppHandle, on_event: Channel<UiEvent>) -> Result<(
 // ---------- live analysis ----------
 
 #[tauri::command]
-pub async fn analyze(app: AppHandle, draft: String, on_event: Channel<UiEvent>) -> Result<()> {
+pub async fn analyze(app: AppHandle, draft: String, previous_draft: Option<String>, on_event: Channel<UiEvent>) -> Result<()> {
     let task_app = app.clone();
     let task = tauri::async_runtime::spawn(async move {
         let state = task_app.state::<AppState>();
+        let settings = state.settings();
         let index = state.project();
         let result = async {
             let provider = provider::resolve(&task_app, Tier::Fast).await?;
             let brief = state.brief.read().expect("brief lock").as_ref().map(|b| b.text.clone());
-
             let budget = provider.context_budget_chars();
             let max_files = if budget < 40_000 { 3 } else { 5 };
-            let snippets = index
-                .as_deref()
-                .map(|i| project::retrieve(i, &draft, max_files, budget / 4))
-                .unwrap_or_default();
+
+            // Jev sends text to TypeSafe, so never for the Local provider.
+            let jev = if settings.jev_allowed() { provider::jev(&task_app) } else { None };
+            let pre = analysis::pre_phase(
+                PreInput {
+                    draft: &draft,
+                    previous_draft: previous_draft.as_deref(),
+                    index: index.as_deref(),
+                    max_files,
+                    budget_chars: budget / 4,
+                    jev: jev.as_ref(),
+                    gate: settings.jev_gate_enabled(),
+                    rerank: settings.jev_rerank_enabled(),
+                },
+                PRE_BUDGET,
+            )
+            .await;
+            let PreOutcome::Analyze { snippets, notice } = pre else { return Ok(None) };
+            send(&on_event, UiEvent::Started);
+            if let Some(message) = notice {
+                send(&on_event, UiEvent::Notice { message });
+            }
 
             let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider);
-            provider.stream(&req, &mut on_chunk(&on_event)).await
+            provider.stream(&req, &mut on_chunk(&on_event)).await.map(Some)
         }
         .await;
         let text = match result {
-            Ok(text) => text,
+            Ok(Some(text)) => text,
+            Ok(None) => return send(&on_event, UiEvent::Skipped),
             Err(e) => return send(&on_event, UiEvent::Error { message: e.to_string() }),
         };
         send(&on_event, UiEvent::Done { text: text.clone() });
 
-        // "Checked in code" fills in after the notes. The next keystroke
+        // "Checked in code" fills in after the notes. The next analysis
         // aborts this task, checks included.
-        if !state.settings().jev_check_enabled() {
+        if !settings.jev_check_enabled() {
             return;
         }
         if let (Some(index), Some(faults)) = (index, prompt::section_body(&text, "Faults")) {

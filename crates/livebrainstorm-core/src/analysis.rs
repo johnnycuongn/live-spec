@@ -35,8 +35,10 @@ pub enum PreOutcome {
 
 pub async fn pre_phase(input: PreInput<'_>, budget: Duration) -> PreOutcome {
     let deadline = Instant::now() + budget;
-    let gate_jev = input.jev.filter(|_| input.gate);
-    let rerank_jev = input.jev.filter(|_| input.rerank);
+    // Plain `if`s, not `Option::filter` closures: the shell awaits this inside
+    // a spawned task, and borrowing closures there trip rustc's Send check.
+    let gate_jev = if input.gate { input.jev } else { None };
+    let rerank_jev = if input.rerank { input.jev } else { None };
 
     let gate_check = async {
         let (jev, previous) = (gate_jev?, input.previous_draft?);
