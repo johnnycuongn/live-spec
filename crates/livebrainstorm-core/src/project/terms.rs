@@ -20,6 +20,11 @@ fn keep(word: &str) -> bool {
         && !STOPWORDS.contains(&word)
 }
 
+/// Common English and keyword noise; `word` must be lowercase.
+pub(crate) fn is_stopword(word: &str) -> bool {
+    STOPWORDS.contains(&word)
+}
+
 /// Folds plurals so "invoices" in a draft matches `invoice` in code. Applied
 /// identically at index and query time; deliberately not a full stemmer, which
 /// would mangle identifiers ("caching" -> "cach").

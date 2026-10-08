@@ -8,7 +8,7 @@ pub mod brief;
 pub mod digest;
 pub mod retrieve;
 pub mod scan;
-mod terms;
+pub(crate) mod terms;
 
 pub use brief::{BriefStatus, BriefStore, StoredBrief};
 pub use retrieve::{retrieve, Snippet};

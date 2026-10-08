@@ -31,24 +31,9 @@ pub fn retrieve(index: &ProjectIndex, query: &str, max_files: usize, budget_char
     if weights.is_empty() || index.files.is_empty() || max_files == 0 {
         return vec![];
     }
-    let n = index.files.len() as f64;
-    let idf = |t: &str| (1.0 + n / f64::from(*index.doc_freq.get(t).unwrap_or(&0)).max(1.0)).ln();
-
-    let mut scored: Vec<(f64, usize)> = index
-        .files
-        .iter()
-        .enumerate()
-        .filter_map(|(i, f)| {
-            let path_lower = f.rel.to_lowercase();
-            let score: f64 = weights
-                .iter()
-                .map(|(t, w)| {
-                    let tf = f.terms.get(t).copied().unwrap_or(0);
-                    let body = if tf > 0 { 1.0 + f64::from(tf).ln() } else { 0.0 };
-                    let path = if path_lower.contains(t.as_str()) { 2.0 } else { 0.0 };
-                    w * idf(t) * (body + path)
-                })
-                .sum();
+    let mut scored: Vec<(f64, usize)> = (0..index.files.len())
+        .filter_map(|i| {
+            let score = file_score(index, i, &weights);
             (score > 0.0).then_some((score, i))
         })
         .collect();
@@ -62,7 +47,24 @@ pub fn retrieve(index: &ProjectIndex, query: &str, max_files: usize, budget_char
         .collect()
 }
 
-fn query_weights(query: &str) -> HashMap<String, f64> {
+/// TF-IDF relevance of file `i` to the weighted query terms; 0 means unrelated.
+pub(crate) fn file_score(index: &ProjectIndex, i: usize, weights: &HashMap<String, f64>) -> f64 {
+    let n = index.files.len() as f64;
+    let f = &index.files[i];
+    let path_lower = f.rel.to_lowercase();
+    weights
+        .iter()
+        .map(|(t, w)| {
+            let idf = (1.0 + n / f64::from(*index.doc_freq.get(t).unwrap_or(&0)).max(1.0)).ln();
+            let tf = f.terms.get(t).copied().unwrap_or(0);
+            let body = if tf > 0 { 1.0 + f64::from(tf).ln() } else { 0.0 };
+            let path = if path_lower.contains(t.as_str()) { 2.0 } else { 0.0 };
+            w * idf * (body + path)
+        })
+        .sum()
+}
+
+pub(crate) fn query_weights(query: &str) -> HashMap<String, f64> {
     let split = query.len().saturating_sub(RECENT_CHARS);
     let split = (split..=query.len()).find(|i| query.is_char_boundary(*i)).unwrap_or(query.len());
     let (older, recent) = query.split_at(split);
@@ -79,7 +81,12 @@ fn query_weights(query: &str) -> HashMap<String, f64> {
 /// The window around the line with the most query hits.
 fn snippet(path: &str, content: &str, weights: &HashMap<String, f64>, max_chars: usize) -> Snippet {
     let lines: Vec<&str> = content.lines().collect();
-    let best = lines
+    window(path, &lines, best_line(&lines, weights), max_chars)
+}
+
+/// Index of the line with the most (weighted) query hits; the first line if none.
+pub(crate) fn best_line(lines: &[&str], weights: &HashMap<String, f64>) -> usize {
+    lines
         .iter()
         .enumerate()
         .map(|(i, l)| {
@@ -88,10 +95,14 @@ fn snippet(path: &str, content: &str, weights: &HashMap<String, f64>, max_chars:
             (hits, i)
         })
         .fold((0.0, 0), |acc, x| if x.0 > acc.0 { x } else { acc })
-        .1;
-    let start = best.saturating_sub(WINDOW_BEFORE);
-    let end = (best + WINDOW_AFTER).min(lines.len());
-    let mut text = lines[start..end].join("\n");
+        .1
+}
+
+/// Lines around `center` (8 before, 16 after), cut to `max_chars`.
+pub(crate) fn window(path: &str, lines: &[&str], center: usize, max_chars: usize) -> Snippet {
+    let start = center.saturating_sub(WINDOW_BEFORE);
+    let end = (center + WINDOW_AFTER).min(lines.len());
+    let mut text = lines[start.min(end)..end].join("\n");
     if text.len() > max_chars {
         let cut = (0..=max_chars).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
         text.truncate(cut);
