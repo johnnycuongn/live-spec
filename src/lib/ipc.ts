@@ -2,21 +2,42 @@
 // src-tauri/src/commands.rs and crates/livebrainstorm-core; keep them in sync.
 import { Channel, invoke } from "@tauri-apps/api/core";
 
+export type Verdict = "confirmed" | "contradicted" | "unclear" | "notShown" | "notFound";
+
+export interface CheckResult {
+  claim: string;
+  verdict: Verdict;
+  confidence: number | null;
+  path: string | null;
+  line: number | null;
+}
+
 export type UiEvent =
   | { type: "text"; text: string }
   | { type: "activity"; label: string }
   | { type: "done"; text: string }
   | { type: "error"; message: string }
-  | { type: "progress"; downloaded: number; total: number | null };
+  | { type: "progress"; downloaded: number; total: number | null }
+  | { type: "checking"; count: number; total: number }
+  | ({ type: "check" } & CheckResult)
+  | { type: "notice"; message: string };
 
 export type ProviderSettings =
   | { kind: "claudeCli"; binaryPath: string | null; fastModel: string; deepModel: string }
   | { kind: "anthropicApi"; fastModel: string; deepModel: string }
   | { kind: "local"; modelId: string };
 
+export interface JevSettings {
+  gate: boolean;
+  rerank: boolean;
+  check: boolean;
+  model: string;
+}
+
 export interface Settings {
   provider: ProviderSettings;
   debounceMs: number;
+  jev: JevSettings;
 }
 
 export type BriefStatus = "missing" | "fresh" | "stale";

@@ -1,17 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "./ipc";
+import { applyEvent, initialAnalysis, startAnalysis, type AnalysisState } from "./analysisState";
 
 const MIN_CHARS = 24;
 const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
-
-export type AnalysisStatus = "idle" | "thinking" | "done" | "error";
-
-interface State {
-  status: AnalysisStatus;
-  markdown: string;
-  error: string | null;
-  analyzedDraft: string;
-}
 
 /**
  * Re-analyzes the draft after the user pauses typing.
@@ -19,25 +11,22 @@ interface State {
  * Like a colleague reading over your shoulder: they wait until you stop
  * typing, then comment; if you keep going, their last comment stays visible
  * but marked as out of date. Old responses are dropped by request id; the
- * backend also aborts the superseded model call.
+ * backend also aborts the superseded model call (and its fact-checks).
  */
 export function useLiveAnalysis(draft: string, debounceMs: number, contextKey: string) {
-  const [state, setState] = useState<State>({ status: "idle", markdown: "", error: null, analyzedDraft: "" });
+  const [state, setState] = useState<AnalysisState>(initialAnalysis);
   const requestId = useRef(0);
   const lastSent = useRef("");
 
   const run = useCallback((text: string) => {
     const id = ++requestId.current;
     lastSent.current = normalize(text);
-    setState({ status: "thinking", markdown: "", error: null, analyzedDraft: text });
+    setState(startAnalysis(text));
     const mine = () => id === requestId.current;
 
     api
       .analyze(text, (ev) => {
-        if (!mine()) return;
-        if (ev.type === "text") setState((s) => ({ ...s, markdown: s.markdown + ev.text }));
-        else if (ev.type === "done") setState((s) => ({ ...s, status: "done", markdown: ev.text || s.markdown }));
-        else if (ev.type === "error") setState((s) => ({ ...s, status: "error", error: ev.message }));
+        if (mine()) setState((s) => applyEvent(s, ev));
       })
       .catch((e) => mine() && setState((s) => ({ ...s, status: "error", error: errorMessage(e) })));
   }, []);

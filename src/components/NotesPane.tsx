@@ -1,3 +1,5 @@
+import type { CheckResult } from "../lib/ipc";
+import { VERDICT, checkLocation, checkSummary, plainClaim } from "../lib/checks";
 import { SECTIONS, parseSections, type SectionKey } from "../lib/sections";
 import type { useLiveAnalysis } from "../lib/useLiveAnalysis";
 import { MiniMarkdown } from "./MiniMarkdown";
@@ -45,6 +47,34 @@ function Rule({ state }: { state: RuleState }) {
   );
 }
 
+const TONE = { accent: "text-accent", fault: "text-fault", faint: "text-faint" } as const;
+
+function CheckRow({ check }: { check: CheckResult }) {
+  const v = VERDICT[check.verdict];
+  const where = checkLocation(check);
+  return (
+    <li className="grid grid-cols-[1rem_minmax(0,1fr)] gap-x-2 text-[13px] leading-snug">
+      <span className={cx("font-semibold", TONE[v.tone])} aria-hidden>
+        {v.mark}
+      </span>
+      <span className="min-w-0">
+        <span className="block truncate" title={plainClaim(check.claim)}>
+          {plainClaim(check.claim)}
+        </span>
+        <span className="text-xs text-muted">
+          {v.label}
+          {where && (
+            <>
+              {" · "}
+              <code className="font-mono text-[0.85em]">{where}</code>
+            </>
+          )}
+        </span>
+      </span>
+    </li>
+  );
+}
+
 export function NotesPane({ analysis: a, hasProject, briefMissing, onBuildBrief }: Props) {
   const sections = parseSections(a.markdown);
   const rule: RuleState = a.status === "thinking" ? "thinking" : a.stale ? "stale" : a.status === "done" ? "fresh" : "idle";
@@ -56,8 +86,9 @@ export function NotesPane({ analysis: a, hasProject, briefMissing, onBuildBrief 
         <p className="mb-5 text-xs text-faint" aria-live="polite">
           {statusText(a)}
         </p>
+        {a.notice && <p className="mb-4 text-xs text-muted">{a.notice}</p>}
 
-        {!hasProject && <p className="mb-4 text-[13px] text-muted">No project open, so notes won't know your code.</p>}
+        {!hasProject &&<p className="mb-4 text-[13px] text-muted">No project open, so notes won't know your code.</p>}
         {hasProject && briefMissing && (
           <p className="mb-4 text-[13px] text-muted">
             Notes are sharper with a project brief.{" "}
@@ -98,6 +129,19 @@ export function NotesPane({ analysis: a, hasProject, briefMissing, onBuildBrief 
             )}
             {a.status === "thinking" && !a.markdown && (
               <p className="text-[13px] text-muted">Reading your draft against the project…</p>
+            )}
+            {a.checking && (
+              <section className="grid gap-1.5">
+                <h2>
+                  <Eyebrow dot="bg-ink">Checked in code</Eyebrow>
+                </h2>
+                <p className="text-xs text-faint">{checkSummary(a.checking, a.checks.length, !!a.notice)}</p>
+                <ul className="grid gap-2">
+                  {a.checks.map((c, i) => (
+                    <CheckRow key={i} check={c} />
+                  ))}
+                </ul>
+              </section>
             )}
           </div>
         )}
