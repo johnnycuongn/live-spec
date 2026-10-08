@@ -4,10 +4,14 @@
 //! TypeSafe's citation-check cookbook). Verdicts are signals, not proof:
 //! Jev reads literally and struggles with behaviour spread over many files.
 
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use futures_util::stream::{self, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use super::{Options, Question};
+use super::{Jev, Options, Question};
 use crate::project::retrieve::{best_line, file_score, query_weights, window};
 use crate::project::{terms, ProjectIndex, Snippet};
 
@@ -15,6 +19,7 @@ pub const MAX_CLAIMS: usize = 6;
 pub const CHECK_MIN_CONFIDENCE: f64 = 0.8;
 /// Jev requests in flight at once; independent of the max-agents setting.
 pub const JEV_CONCURRENCY: usize = 8;
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const EVIDENCE_CHARS: usize = 1_500;
 const MIN_SPAN_CHARS: usize = 3;
 /// Extensions that make a backticked span a file path: `cart.ts` is a file,
@@ -182,7 +187,66 @@ pub fn verdict(choice: &str, confidence: f64) -> Verdict {
     }
 }
 
-#[cfg(test)]
+/// Checks each Fault and reports through `on_event` as verdicts arrive.
+/// Emits nothing when no Fault names code; otherwise `Checking` first, then
+/// one `Result` per checkable claim, or a single `Notice` if Jev fails.
+pub async fn run(jev: &Jev, index: &ProjectIndex, faults: &str, mut on_event: impl FnMut(CheckEvent)) {
+    let (claims, total) = extract_claims(faults);
+    let located: Vec<(String, Evidence)> = claims
+        .into_iter()
+        .map(|claim| {
+            let evidence = locate_evidence(index, &claim);
+            (claim, evidence)
+        })
+        .filter(|(_, evidence)| *evidence != Evidence::Uncheckable)
+        .collect();
+    if located.is_empty() {
+        return;
+    }
+    on_event(CheckEvent::Checking { count: located.len(), total });
+
+    let mut to_judge = Vec::new();
+    for (claim, evidence) in located {
+        match evidence {
+            Evidence::Found(code, line) => to_judge.push((claim, code, line)),
+            _ => on_event(CheckEvent::Result(CheckResult {
+                claim,
+                verdict: Verdict::NotFound,
+                confidence: None,
+                path: None,
+                line: None,
+            })),
+        }
+    }
+
+    let questions = BTreeMap::from([("relation".to_owned(), question())]);
+    let questions = &questions;
+    let mut answers = std::pin::pin!(stream::iter(to_judge)
+        .map(|(claim, code, line)| async move {
+            let answer = jev.ask(&state(&claim, &code), questions, REQUEST_TIMEOUT).await;
+            (claim, code, line, answer)
+        })
+        .buffer_unordered(JEV_CONCURRENCY));
+    while let Some((claim, code, line, answer)) = answers.next().await {
+        let picked = match answer {
+            Ok(response) => response.choice("relation").map(|(choice, confidence)| (verdict(choice, confidence), confidence)),
+            Err(e) => return on_event(CheckEvent::Notice(format!("Couldn't check the notes against the code: {e}"))),
+        };
+        let Some((verdict, confidence)) = picked else {
+            return on_event(CheckEvent::Notice(
+                "Couldn't check the notes against the code: Jev returned an unexpected answer.".into(),
+            ));
+        };
+        on_event(CheckEvent::Result(CheckResult {
+            claim,
+            verdict,
+            confidence: Some(confidence),
+            path: Some(code.path),
+            line: Some(line),
+        }));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +333,64 @@ mod tests {
         let text = serde_json::to_string(&question()).unwrap();
         let pos = |s: &str| text.find(s).unwrap();
         assert!(pos("\"supports\"") < pos("\"contradicts\"") && pos("\"contradicts\"") < pos("\"says_nothing\""));
+    }
+
+    use crate::jev::test_server::{serve, Canned};
+    use crate::jev::{Jev, DEFAULT_MODEL};
+
+    const SUPPORTS: &str = r#"{"model":"jev-1.13.0","answers":{"relation":{"type":"choice","choice":"supports","probabilities":{"supports":0.95,"contradicts":0.03,"says_nothing":0.02},"confidence":0.93}},"usage":{"input_tokens":300,"output_tokens":20}}"#;
+
+    fn judge(base_url: String) -> Jev {
+        Jev { base_url, ..Jev::new("test-key".into(), DEFAULT_MODEL.into(), reqwest::Client::new()) }
+    }
+
+    async fn events(jev: &Jev, faults: &str) -> Vec<CheckEvent> {
+        let idx = scan(fixture().path()).unwrap();
+        let mut out = Vec::new();
+        run(jev, &idx, faults, |e| out.push(e)).await;
+        out
+    }
+
+    #[tokio::test]
+    async fn reports_verdicts_as_they_arrive() {
+        let (url, _) = serve(vec![Canned::new(200, SUPPORTS)]).await;
+        let faults = "- `createInvoice` never applies discounts\n- `applyCoupon` is called twice\n- Totals look fine";
+        assert_eq!(
+            events(&judge(url), faults).await,
+            vec![
+                CheckEvent::Checking { count: 2, total: 3 },
+                CheckEvent::Result(CheckResult {
+                    claim: "`applyCoupon` is called twice".into(),
+                    verdict: Verdict::NotFound,
+                    confidence: None,
+                    path: None,
+                    line: None,
+                }),
+                CheckEvent::Result(CheckResult {
+                    claim: "`createInvoice` never applies discounts".into(),
+                    verdict: Verdict::Confirmed,
+                    confidence: Some(0.93),
+                    path: Some("src/billing/invoice.ts".into()),
+                    line: Some(1),
+                }),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_jev_failure_becomes_one_notice() {
+        let (url, _) = serve(vec![Canned::new(401, "{}")]).await;
+        let got = events(&judge(url), "- `createInvoice` never applies discounts").await;
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert_eq!(got[0], CheckEvent::Checking { count: 1, total: 1 });
+        assert!(matches!(&got[1], CheckEvent::Notice(m) if m.contains("TypeSafe key rejected")), "{got:?}");
+    }
+
+    #[tokio::test]
+    async fn nothing_to_check_emits_nothing() {
+        let (url, hits) = serve(vec![]).await;
+        assert!(events(&judge(url.clone()), "- Nothing so far.").await.is_empty());
+        assert!(events(&judge(url), "- Totals look fine").await.is_empty());
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }
