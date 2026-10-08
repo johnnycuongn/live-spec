@@ -25,8 +25,13 @@ export const initialAnalysis: AnalysisState = {
   notice: null,
 };
 
-/** A new run starts clean: no notes, checks or notices from the previous draft. */
-export const startAnalysis = (draft: string): AnalysisState => ({ ...initialAnalysis, status: "thinking", analyzedDraft: draft });
+/** A new pause: the old notes stay visible until the backend says `started`. */
+export const startAnalysis = (prev: AnalysisState, draft: string): AnalysisState => ({
+  ...prev,
+  status: "thinking",
+  error: null,
+  analyzedDraft: draft,
+});
 
 export function applyEvent(s: AnalysisState, ev: UiEvent): AnalysisState {
   switch (ev.type) {
@@ -45,7 +50,21 @@ export function applyEvent(s: AnalysisState, ev: UiEvent): AnalysisState {
       };
     case "notice":
       return { ...s, notice: ev.message };
+    case "started":
+      return { ...s, markdown: "", checks: [], checking: null, notice: null, error: null };
+    case "skipped":
+      return { ...s, status: "done" };
     default:
       return s;
   }
 }
+
+/**
+ * The draft the gate compares against: the last one actually analysed.
+ * Skips never move it, so small edits add up to a real change.
+ */
+export const lastAnalyzedAfter = (last: string | null, ev: UiEvent, sent: string): string | null =>
+  ev.type === "done" ? sent : last;
+
+/** "Try again" always re-analyses, so it sends no previous draft. */
+export const previousDraftFor = (last: string | null, rerun: boolean): string | null => (rerun ? null : last);

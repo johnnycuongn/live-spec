@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorMessage } from "./ipc";
-import { applyEvent, initialAnalysis, startAnalysis, type AnalysisState } from "./analysisState";
+import {
+  applyEvent,
+  initialAnalysis,
+  lastAnalyzedAfter,
+  previousDraftFor,
+  startAnalysis,
+  type AnalysisState,
+} from "./analysisState";
 
 const MIN_CHARS = 24;
 const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -10,30 +17,35 @@ const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
  *
  * Like a colleague reading over your shoulder: they wait until you stop
  * typing, then comment; if you keep going, their last comment stays visible
- * but marked as out of date. Old responses are dropped by request id; the
- * backend also aborts the superseded model call (and its fact-checks).
+ * but marked as out of date. If the edit didn't change the idea, the backend
+ * skips (Jev gate) and the notes stay. Old responses are dropped by request
+ * id; the backend also aborts the superseded run, checks included.
  */
 export function useLiveAnalysis(draft: string, debounceMs: number, contextKey: string) {
   const [state, setState] = useState<AnalysisState>(initialAnalysis);
   const requestId = useRef(0);
   const lastSent = useRef("");
+  const lastAnalyzed = useRef<string | null>(null);
 
-  const run = useCallback((text: string) => {
+  const run = useCallback((text: string, rerun = false) => {
     const id = ++requestId.current;
     lastSent.current = normalize(text);
-    setState(startAnalysis(text));
+    setState((s) => startAnalysis(s, text));
     const mine = () => id === requestId.current;
 
     api
-      .analyze(text, (ev) => {
-        if (mine()) setState((s) => applyEvent(s, ev));
+      .analyze(text, previousDraftFor(lastAnalyzed.current, rerun), (ev) => {
+        if (!mine()) return;
+        lastAnalyzed.current = lastAnalyzedAfter(lastAnalyzed.current, ev, text);
+        setState((s) => applyEvent(s, ev));
       })
       .catch((e) => mine() && setState((s) => ({ ...s, status: "error", error: errorMessage(e) })));
   }, []);
 
-  // New project or brief: the same draft deserves a fresh read.
+  // New project or brief: the same draft deserves a fresh read, with no gate.
   useEffect(() => {
     lastSent.current = "";
+    lastAnalyzed.current = null;
   }, [contextKey]);
 
   useEffect(() => {
@@ -47,6 +59,6 @@ export function useLiveAnalysis(draft: string, debounceMs: number, contextKey: s
     ...state,
     tooShort: normalize(draft).length < MIN_CHARS,
     stale: state.status !== "idle" && normalize(state.analyzedDraft) !== normalize(draft),
-    rerun: () => run(draft),
+    rerun: () => run(draft, true),
   };
 }

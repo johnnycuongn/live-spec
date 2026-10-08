@@ -20,7 +20,9 @@ export type UiEvent =
   | { type: "progress"; downloaded: number; total: number | null }
   | { type: "checking"; count: number; total: number }
   | ({ type: "check" } & CheckResult)
-  | { type: "notice"; message: string };
+  | { type: "notice"; message: string }
+  | { type: "started" }
+  | { type: "skipped" };
 
 export type ProviderSettings =
   | { kind: "claudeCli"; binaryPath: string | null; fastModel: string; deepModel: string }
@@ -96,7 +98,8 @@ export const api = {
   openProject: (path: string) => invoke<ProjectSummary>("open_project", { path }),
   buildBrief: (onEvent: (e: UiEvent) => void) => stream("build_brief", {}, onEvent),
 
-  analyze: (draft: string, onEvent: (e: UiEvent) => void) => stream("analyze", { draft }, onEvent),
+  analyze: (draft: string, previousDraft: string | null, onEvent: (e: UiEvent) => void) =>
+    stream("analyze", { draft, previousDraft }, onEvent),
   cancelAnalysis: () => invoke<void>("cancel_analysis"),
 
   localStatus: () => invoke<LocalStatus>("local_inventory"),
