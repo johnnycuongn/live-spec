@@ -1,0 +1,93 @@
+/* LiveBrainstorm: a draft and the notes beside it.
+   Minimal: neutral greys, one blue accent, the rule between the panes as the
+   only signature element. Note colours carry meaning (faults red, directions
+   blue, questions amber). Your words are set in a serif, the AI's in a sans.
+   Fonts are bundled (Fontsource), never fetched: the app works offline and
+   the CSP in tauri.conf.json only allows 'self'. */
+
+@import "tailwindcss";
+@import "@fontsource-variable/inter/opsz.css";
+@import "@fontsource-variable/literata/opsz.css";
+@import "@fontsource-variable/jetbrains-mono";
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Literata Variable", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace;
+
+  --animate-fill: fill 1.6s ease-in-out infinite;
+  --animate-pulse-dot: pulse-dot 1.2s ease-in-out infinite;
+
+  @keyframes fill {
+    0% { transform: scaleY(0); transform-origin: top; }
+    50% { transform: scaleY(1); transform-origin: top; }
+    51% { transform: scaleY(1); transform-origin: bottom; }
+    100% { transform: scaleY(0); transform-origin: bottom; }
+  }
+  @keyframes pulse-dot {
+    50% { opacity: 0.35; }
+  }
+}
+
+/* Semantic colours: components say `bg-page text-ink border-line`, and dark
+   mode is handled here once instead of with `dark:` on every element. */
+@theme inline {
+  --color-page: var(--lb-page);
+  --color-panel: var(--lb-panel);
+  --color-subtle: var(--lb-subtle);
+  --color-line: var(--lb-line);
+  --color-ink: var(--lb-ink);
+  --color-muted: var(--lb-muted);
+  --color-faint: var(--lb-faint);
+  --color-accent: var(--lb-accent);
+  --color-fault: var(--lb-fault);
+  --color-question: var(--lb-question);
+}
+
+:root {
+  color-scheme: light dark;
+  --lb-page: #ffffff;
+  --lb-panel: #fafafa;
+  --lb-subtle: #f4f4f5;
+  --lb-line: #e4e4e7;
+  --lb-ink: #18181b;
+  --lb-muted: #71717a;
+  --lb-faint: #a1a1aa;
+  --lb-accent: #2563eb;
+  --lb-fault: #dc2626;
+  --lb-question: #b45309;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --lb-page: #161618;
+    --lb-panel: #1c1c1f;
+    --lb-subtle: #27272a;
+    --lb-line: #2e2e33;
+    --lb-ink: #e4e4e7;
+    --lb-muted: #a1a1aa;
+    --lb-faint: #71717a;
+    --lb-accent: #60a5fa;
+    --lb-fault: #f87171;
+    --lb-question: #fbbf24;
+  }
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background: var(--color-page);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+}
