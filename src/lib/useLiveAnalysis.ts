@@ -7,6 +7,7 @@ import {
   previousDraftFor,
   startAnalysis,
   type AnalysisState,
+  type Analyzed,
 } from "./analysisState";
 
 const MIN_CHARS = 24;
@@ -25,18 +26,22 @@ export function useLiveAnalysis(draft: string, debounceMs: number, contextKey: s
   const [state, setState] = useState<AnalysisState>(initialAnalysis);
   const requestId = useRef(0);
   const lastSent = useRef("");
-  const lastAnalyzed = useRef<string | null>(null);
+  const lastAnalyzed = useRef<Analyzed | null>(null);
+  // Read at call time, so each request remembers the context it ran in.
+  const context = useRef(contextKey);
+  context.current = contextKey;
 
   const run = useCallback((text: string, rerun = false) => {
     const id = ++requestId.current;
     lastSent.current = normalize(text);
+    const ctx = context.current;
     setState((s) => startAnalysis(s, text));
     const mine = () => id === requestId.current;
 
     api
-      .analyze(text, previousDraftFor(lastAnalyzed.current, rerun), (ev) => {
+      .analyze(text, previousDraftFor(lastAnalyzed.current, rerun, ctx), (ev) => {
         if (!mine()) return;
-        lastAnalyzed.current = lastAnalyzedAfter(lastAnalyzed.current, ev, text);
+        lastAnalyzed.current = lastAnalyzedAfter(lastAnalyzed.current, ev, text, ctx);
         setState((s) => applyEvent(s, ev));
       })
       .catch((e) => mine() && setState((s) => ({ ...s, status: "error", error: errorMessage(e) })));

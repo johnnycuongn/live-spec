@@ -163,8 +163,8 @@ All questions keep each `state` small and on topic, as Jev's "large irrelevant s
 
 - Request body: `{"state", "model", "questions": {id: {"type": "noul" | "choice", "instructions", "criteria"}}}`. Response body: `{"model", "answers": {id: {"type", …}}, "usage"}`, as in the API reference.
 - Model: `settings.jev.model`, default `"jev-latest"`. The answering model ID from each response is kept for logging.
-- At most 8 Jev requests in flight (`JEV_CONCURRENCY`), independent of max agents.
-- Timeouts: each request is bounded by the remaining pre-phase budget (`PRE_BUDGET`, 1,500 ms in phase 2: 20 rerank requests at 8 in flight take 3 waves of about 0.3 s; tuned from the phase 2 measurement), or 5 s during the check phase.
+- At most 8 Jev requests in flight for fact-checks (`JEV_CONCURRENCY`), independent of max agents. The rerank sends its whole 20-snippet shortlist at once (`RERANK_CONCURRENCY`), so the pre-phase costs about one round trip, as the success criteria require (changed after the phase 2 review: 3 waves of 8 put normal pauses at 1.2–1.5 s against a 1.5 s budget).
+- Timeouts: each request is bounded by the remaining pre-phase budget (`PRE_BUDGET`, 1,500 ms: about one round trip of 0.3 s for the gate and the whole rerank shortlist at once, plus room for a slow answer or one 503 retry), or 5 s during the check phase.
 - Retries: on 429, 503 or 529 (503 `model_unavailable` was observed intermittently on the first call in phase 1 measurements), up to 2 retries with 250 ms then 750 ms backoff (or `retry-after`, if shorter than the remaining budget).
 - Errors:
   - 401 → `Error::Precondition("TypeSafe key rejected. Check .env.local or Settings → Jev.")`.
@@ -330,3 +330,4 @@ AGENTS.md (the agents module, Jev, key lookup and the `VITE_` warning, new event
 - Reranked picks: `llm/claude_cli.rs`, `AGENTS.md`, `src-tauri/src/provider.rs`, `src-tauri/src/commands.rs`, `llm/mod.rs`. Keyword order without Jev: the phase 2 plan, the phase 1 plan, `AGENTS.md`, `tests/jev_live.rs`, the spec. The reranked set is clearly more on-topic for a draft about `ClaudeCli::stream`; keyword order favours the Markdown docs that quote those identifiers.
 - `PRE_BUDGET`: kept at 1,500 ms by the plan's rule (no round timed out). But the slowest analysed round finished within 30 ms of the budget, because the 20 rerank requests run in 3 waves of 8. If timeouts show up in use, the cheaper fix is a shorter shortlist or higher rerank concurrency, not a longer budget.
 - One failed request out of 20 discards the whole ranking (by design). With TypeSafe's intermittent 503s that happened in 1 of 3 rounds; the fallback worked as intended.
+- **After the review fix** (rerank shortlist sent at once instead of in waves of 8), same test: adds an idea 979 / 960 / 359 ms, analysed with reranked code and no notices; rewords only 308 / 379 / 386 ms, SKIP. Normal analysed pauses now finish well inside `PRE_BUDGET`.

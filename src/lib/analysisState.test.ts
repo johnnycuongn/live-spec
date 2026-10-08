@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyEvent, initialAnalysis, lastAnalyzedAfter, previousDraftFor, startAnalysis } from "./analysisState";
+import { applyEvent, initialAnalysis, lastAnalyzedAfter, previousDraftFor, startAnalysis, type Analyzed } from "./analysisState";
+import { checkSummary } from "./checks";
 import type { UiEvent } from "./ipc";
 
 const run = (events: UiEvent[]) => events.reduce(applyEvent, startAnalysis(initialAnalysis, "draft"));
@@ -49,19 +50,47 @@ describe("applyEvent", () => {
 
 describe("previous draft for the gate", () => {
   it("moves only when an analysis completes", () => {
-    let last: string | null = null;
-    last = lastAnalyzedAfter(last, { type: "started" }, "v1");
-    expect(last).toBeNull();
-    last = lastAnalyzedAfter(last, { type: "done", text: "" }, "v1");
-    expect(last).toBe("v1");
-    last = lastAnalyzedAfter(last, { type: "skipped" }, "v1, reworded");
-    last = lastAnalyzedAfter(last, { type: "skipped" }, "v1, reworded again");
-    expect(last).toBe("v1");
+    let last: Analyzed | null = null;
+    last = lastAnalyzedAfter(last, { type: "done", text: "" }, "v1", "A");
+    expect(last).toEqual({ draft: "v1", context: "A" });
+    last = lastAnalyzedAfter(last, { type: "skipped" }, "v1, reworded", "A");
+    last = lastAnalyzedAfter(last, { type: "skipped" }, "v1, reworded again", "A");
+    expect(previousDraftFor(last, false, "A")).toBe("v1");
   });
 
   it("try again bypasses the gate", () => {
-    expect(previousDraftFor("v1", true)).toBeNull();
-    expect(previousDraftFor("v1", false)).toBe("v1");
-    expect(previousDraftFor(null, false)).toBeNull();
+    const last: Analyzed = { draft: "v1", context: "A" };
+    expect(previousDraftFor(last, true, "A")).toBeNull();
+    expect(previousDraftFor(last, false, "A")).toBe("v1");
+    expect(previousDraftFor(null, false, "A")).toBeNull();
+  });
+
+  it("once a run has started, the next pause always re-analyses", () => {
+    // v1 done, v2 starts streaming (old notes cleared), then the user reverts to v1.
+    let last: Analyzed | null = lastAnalyzedAfter(null, { type: "done", text: "" }, "v1", "A");
+    last = lastAnalyzedAfter(last, { type: "started" }, "v2", "A");
+    expect(previousDraftFor(last, false, "A")).toBeNull();
+  });
+
+  it("an analysis that finishes for another project or brief never gates this one", () => {
+    const last = lastAnalyzedAfter(null, { type: "done", text: "" }, "draft", "project-A|brief-1");
+    expect(previousDraftFor(last, false, "project-A|brief-2")).toBeNull();
+  });
+});
+
+describe("checks interrupted by a skipped pause", () => {
+  it("stop claiming to be checking", () => {
+    const s = applyEvent(
+      run([{ type: "done", text: "## Faults\n- `x`" }, { type: "checking", count: 4, total: 4 }, check]),
+      { type: "skipped" },
+    );
+    expect(s.status).toBe("done");
+    expect(s.notice).toBe("Checks stopped when you edited.");
+    expect(checkSummary(s.checking!, s.checks.length, !!s.notice)).toBe("1 of 4 faults checked");
+  });
+
+  it("finished checks are left alone", () => {
+    const s = applyEvent(run([{ type: "done", text: "" }, { type: "checking", count: 1, total: 1 }, check]), { type: "skipped" });
+    expect(s.notice).toBeNull();
   });
 });

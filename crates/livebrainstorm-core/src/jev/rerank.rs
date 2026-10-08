@@ -8,13 +8,15 @@ use std::time::Instant;
 use futures_util::stream::{self, StreamExt};
 use serde_json::{json, Value};
 
-use super::check::JEV_CONCURRENCY;
 use super::{Jev, NoulCriteria, Question};
 use crate::project::Snippet;
 use crate::prompt::shape_draft_to;
 use crate::{Error, Result};
 
 pub const SHORTLIST: usize = 20;
+/// The whole shortlist goes out at once, so the rerank costs about one Jev
+/// round trip (~0.3 s), not three waves of 8. TypeSafe allows 80 requests/s.
+const RERANK_CONCURRENCY: usize = SHORTLIST;
 pub const SHORTLIST_CHARS: usize = 1_500;
 const DRAFT_CHARS: usize = 4_000;
 
@@ -67,7 +69,7 @@ pub async fn scores(jev: &Jev, draft: &str, candidates: &[Snippet], deadline: In
             let timeout = deadline.saturating_duration_since(Instant::now());
             (i, jev.ask(&state(shaped, &candidates[i]), questions, timeout).await)
         })
-        .buffer_unordered(JEV_CONCURRENCY));
+        .buffer_unordered(RERANK_CONCURRENCY));
     let mut out = vec![0.0; candidates.len()];
     while let Some((i, answer)) = answers.next().await {
         out[i] = answer?.noul("relevant").ok_or_else(|| Error::Provider("Jev returned an unexpected answer.".into()))?;
@@ -130,5 +132,20 @@ mod tests {
         let (url, _) = serve_with(|body: &str| Some(if body.contains("CartStore") { Canned::new(500, "boom") } else { Canned::noul("relevant", 0.9) })).await;
         let candidates = vec![snip("src/cart/cart.ts", "export class CartStore {}"), snip("src/billing/invoice.ts", "createInvoice")];
         assert!(scores(&judge(url), "invoices", &candidates, Instant::now() + Duration::from_secs(5)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn the_whole_shortlist_goes_out_at_once() {
+        // Slow answers, so every request sent in the first wave is still open
+        // when we count: one wave of 20 is about one round trip, waves of 8 are three.
+        let (url, hits) = serve_with(|_: &str| Some(Canned::noul("relevant", 0.5).delayed(1_000))).await;
+        let candidates: Vec<Snippet> = (0..SHORTLIST).map(|i| snip(&format!("src/f{i}.ts"), "code")).collect();
+        let jev = judge(url);
+        let (result, in_flight) = tokio::join!(scores(&jev, "draft", &candidates, Instant::now() + Duration::from_secs(5)), async {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            hits.load(std::sync::atomic::Ordering::SeqCst)
+        });
+        assert!(result.is_ok());
+        assert_eq!(in_flight, SHORTLIST, "all shortlisted snippets are scored in one round trip");
     }
 }

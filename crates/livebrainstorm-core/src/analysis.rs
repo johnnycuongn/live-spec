@@ -9,7 +9,8 @@ use crate::project::{retrieve, shortlist, ProjectIndex, Snippet};
 use crate::Error;
 
 /// Gate and rerank share this deadline. Jev answers in about 0.3 s, and the
-/// rerank's 20 requests run 8 at a time (3 waves).
+/// gate and all 20 rerank requests go out at once, so this leaves room for a
+/// slow answer or one 503 retry.
 pub const PRE_BUDGET: Duration = Duration::from_millis(1_500);
 
 pub struct PreInput<'a> {
