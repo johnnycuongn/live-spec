@@ -30,6 +30,22 @@ Make LiveBrainstorm faster at both of its slow jobs: building the project brief,
 - A different model per agent; Ollama or LM Studio providers; a persistent `claude` session.
 - Parallelism for the local model. One llama-server would just queue the requests.
 
+## Prerequisite: harden the Claude Code invocation
+
+Added after a security review of the initial commit, which found two problems in `llm/claude_cli.rs`. Pending the user's plan review.
+
+1. **Untrusted workspace config.** `claude -p` runs with the opened project as its working directory, and print mode skips Claude Code's workspace-trust prompt. A cloned repo's `.claude/settings.json` hooks or `.mcp.json` servers could therefore run commands.
+2. **Incomplete denylist.** Tools are blocked by a fixed `--disallowedTools` list that misses newer tools (`Agent`, `PowerShell`, MCP tools). If the user's own settings pre-approve such tools, prompt injection from repo files could reach them.
+
+**Fix**, using flags verified in Claude Code 2.1.293:
+- Every run passes `--restricted`, which ignores user, project and local settings files, confines file tools to the working directory and refuses bypassPermissions.
+- Every run passes `--strict-mcp-config` with no `--mcp-config`, so no MCP servers start.
+- Tools come from an allowlist via `--tools`: `Read,Glob,Grep` for brief explorers and `""` for live analysis.
+- The denylist is removed.
+- An older CLI that rejects these flags gets the message "Update it with `claude update`" instead of a raw error.
+
+This lands before the parallel explorers of phase 4 multiply the number of `claude` runs.
+
 ## Success criteria
 
 - With max agents = 1 and no TypeSafe key, behaviour is identical to today. Covered by tests.
@@ -268,7 +284,7 @@ Manual: `tauri dev` with the user's key on this repo. Check the timings in the s
 
 Each phase ends with passing tests and a working app.
 
-1. **Jev locally:** `.env.local` key loading (debug builds), the `jev` client, the opt-in latency test, and `jev::check` with the "Checked in code" UI. This gives the first real Jev measurement.
+1. **Hardening, then Jev locally:** the Claude Code hardening above, then `.env.local` key loading (debug builds), the `jev` client, the opt-in latency test, and `jev::check` with the "Checked in code" UI. This gives the first real Jev measurement.
 2. **Gate and rerank:** the pre-phase, the `started`, `skipped` and `notice` events, and `previousDraft`.
 3. **Parallel notes:** `agents::run_limited`, section groups, per-section prompts, lane events, and lane merging in the UI.
 4. **Parallel brief:** `explore::slices`, explorers, merge, and agent-tagged activity.
