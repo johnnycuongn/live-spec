@@ -4,6 +4,7 @@
 //! API reference: https://docs.typesafe.ai/api.md
 
 pub mod check;
+pub mod gate;
 #[cfg(test)]
 pub(crate) mod test_server;
 
