@@ -4,6 +4,7 @@
 //! retrieval, prompting, provider streaming, local runtime management) is
 //! unit-testable with plain `cargo test` and reusable from a CLI later.
 
+pub mod analysis;
 pub mod env_file;
 pub mod error;
 pub mod jev;
