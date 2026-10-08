@@ -20,6 +20,14 @@ Then pick a model in Settings (top right):
 | **Anthropic API key** | Paste a key; it's stored in the OS keychain | Sharing LiveBrainstorm with anyone else |
 | **Local model** | Click *Install engine*, then *Download* a model | Private/offline; weaker critique |
 
+### Optional: fact-check notes with Jev
+
+With a [TypeSafe](https://typesafe.ai) API key, LiveBrainstorm checks every Fault in its notes against your code and marks it ✓ confirmed, ✗ contradicted, or unclear. For local development, put the key in `.env.local` at the repo root (git ignores it):
+
+    TYPESAFE_API_KEY=your-key
+
+Development builds read it on each analysis, so edits apply without a restart. Packaged builds ignore `.env.local`; set `TYPESAFE_API_KEY` in the environment instead.
+
 ## How it works
 
 ```

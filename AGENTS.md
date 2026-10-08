@@ -76,6 +76,14 @@ Brief building (`build_brief`, `Tier::Deep`) and downloads (`install_runtime`, `
 - **Local:** `provider::ensure_local` starts `llama-server` in its *own* spawned task. Analysis tasks are aborted on every keystroke, and an abort must not kill a model that's halfway through loading. `AppState.local` is a `tokio::sync::Mutex` because it's held across that slow startup. Every other lock in `AppState` is `std` and must never be held across `.await`. On app exit and when leaving the local provider, the server is stopped to free RAM.
 - **Budgets:** `Provider::context_budget_chars()` drives all prompt sizing: 120k characters for Claude, `context_tokens × 1.5` for local models. The brief is clipped to 3/5 of the budget and snippets get 1/4. Drafts over 12k characters keep the first 2k plus the tail.
 
+### Jev (TypeSafe)
+
+`livebrainstorm-core::jev` is a typed client for TypeSafe's System One API (`POST https://api.typesafe.ai/v1/systemone`): one `state`, any number of Noul/Choice questions, typed answers with probabilities. It judges; it never writes text. Choice options serialize in the order given (`jev::Options`) because Jev 1.13 can lean towards the first option.
+
+- **Fact-check ("Checked in code"):** after `done`, `commands::analyze` takes the Faults section (`prompt::section_body`) and runs `jev::check::run`. Plain code finds the evidence: backticked names and paths in each bullet, matched against the in-memory index (names found in more than a quarter of the files are too generic). Jev answers supports / contradicts / says_nothing per claim; ✓/✗ need confidence ≥ 0.8. Check events arrive after `done`, and the next keystroke aborts them with the rest of the task.
+- **Key lookup** (`secrets::jev_key`): Keychain account `typesafe-api-key`, then `TYPESAFE_API_KEY` in the environment, then, in debug builds only, `TYPESAFE_API_KEY` in the repo's `.env.local` (read by `env_file::read_value`, never exported). The key never crosses IPC. **Never prefix it `VITE_`:** Vite reads `.env.local` too and ships `VITE_*` variables to the webview bundle.
+- Jev failures never fail an analysis; they surface as one `notice` event.
+
 ### Errors
 
 `livebrainstorm_core::Error` serializes as a plain string across IPC. `Precondition` means the user must act (open a project, install Claude Code, download a model). The UI shows its message verbatim, so write it as an instruction to the user. `Provider` means the model, CLI, or network failed.
@@ -94,6 +102,9 @@ Brief building (`build_brief`, `Tier::Deep`) and downloads (`install_runtime`, `
 - **Settings defaults:** `Settings::default()` in `settings.rs` ↔ `DEFAULTS` in `src/components/SettingsDialog.tsx`.
 - **New IPC command:** `#[tauri::command]` in `commands.rs`, then register it in `generate_handler!` in `src-tauri/src/lib.rs`, then add a wrapper to `api` in `ipc.ts`. App commands need no capability entry. Plugin permissions do: `src-tauri/capabilities/default.json` grants only `core:default` and `dialog:allow-open`.
 - **New provider** touches: `ProviderSettings` (`settings.rs`), a module in `llm/` plus an arm in each `match` on `Provider`, `provider::resolve`, `ipc.ts`, `SettingsDialog.tsx`, and `providerLabel` in `App.tsx`.
+
+- **Section parsing:** `prompt::section_body` (Rust) mirrors `parseSections` in `src/lib/sections.ts`; change both together.
+- **Check events:** `CheckResult` / `Verdict` in `jev/check.rs` ↔ `CheckResult` / `Verdict` in `src/lib/ipc.ts`.
 
 ## Deliberate decisions to preserve
 

@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use livebrainstorm_core::jev::Jev;
 use livebrainstorm_core::llm::{AnthropicApi, ClaudeCli, OpenAiCompat, Provider};
 use livebrainstorm_core::local::catalog;
 use livebrainstorm_core::local::LocalServer;
@@ -89,4 +90,11 @@ pub async fn ensure_local(app: &AppHandle, model_id: &str) -> Result<(String, u3
     })
     .await
     .map_err(|e| Error::Provider(format!("Local model task failed: {e}")))?
+}
+
+/// A Jev client when a TypeSafe key is found; callers check the feature switches.
+pub fn jev(app: &AppHandle) -> Option<Jev> {
+    let state = app.state::<AppState>();
+    let key = secrets::jev_key()?;
+    Some(Jev::new(key, state.settings().jev.model, state.http.clone()))
 }

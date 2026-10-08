@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use livebrainstorm_core::jev::check::{self, CheckEvent, CheckResult};
 use livebrainstorm_core::llm::Chunk;
 use livebrainstorm_core::local::{self, catalog, download, runtime, LocalInventory};
 use livebrainstorm_core::project::{self, BriefStatus, StoredBrief};
@@ -26,6 +27,21 @@ pub enum UiEvent {
     Done { text: String },
     Error { message: String },
     Progress { downloaded: u64, total: Option<u64> },
+    /// `count` of the `total` Faults name code that's being checked.
+    Checking { count: usize, total: usize },
+    Check(CheckResult),
+    /// Non-fatal: the notes are fine, something around them failed.
+    Notice { message: String },
+}
+
+impl From<CheckEvent> for UiEvent {
+    fn from(ev: CheckEvent) -> Self {
+        match ev {
+            CheckEvent::Checking { count, total } => UiEvent::Checking { count, total },
+            CheckEvent::Result(result) => UiEvent::Check(result),
+            CheckEvent::Notice(message) => UiEvent::Notice { message },
+        }
+    }
 }
 
 fn send(ch: &Channel<UiEvent>, ev: UiEvent) {
@@ -167,10 +183,10 @@ pub async fn build_brief(app: AppHandle, on_event: Channel<UiEvent>) -> Result<(
 pub async fn analyze(app: AppHandle, draft: String, on_event: Channel<UiEvent>) -> Result<()> {
     let task_app = app.clone();
     let task = tauri::async_runtime::spawn(async move {
+        let state = task_app.state::<AppState>();
+        let index = state.project();
         let result = async {
             let provider = provider::resolve(&task_app, Tier::Fast).await?;
-            let state = task_app.state::<AppState>();
-            let index = state.project();
             let brief = state.brief.read().expect("brief lock").as_ref().map(|b| b.text.clone());
 
             let budget = provider.context_budget_chars();
@@ -184,7 +200,22 @@ pub async fn analyze(app: AppHandle, draft: String, on_event: Channel<UiEvent>) 
             provider.stream(&req, &mut on_chunk(&on_event)).await
         }
         .await;
-        finish(&on_event, result);
+        let text = match result {
+            Ok(text) => text,
+            Err(e) => return send(&on_event, UiEvent::Error { message: e.to_string() }),
+        };
+        send(&on_event, UiEvent::Done { text: text.clone() });
+
+        // "Checked in code" fills in after the notes. The next keystroke
+        // aborts this task, checks included.
+        if !state.settings().jev.check {
+            return;
+        }
+        if let (Some(index), Some(faults)) = (index, prompt::section_body(&text, "Faults")) {
+            if let Some(jev) = provider::jev(&task_app) {
+                check::run(&jev, &index, &faults, |ev| send(&on_event, ev.into())).await;
+            }
+        }
     });
     replace_task(&app.state::<AppState>().analysis, task);
     Ok(())
