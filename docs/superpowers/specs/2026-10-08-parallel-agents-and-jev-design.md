@@ -165,7 +165,7 @@ All questions keep each `state` small and on topic, as Jev's "large irrelevant s
 - Model: `settings.jev.model`, default `"jev-latest"`. The answering model ID from each response is kept for logging.
 - At most 8 Jev requests in flight (`JEV_CONCURRENCY`), independent of max agents.
 - Timeouts: each request is bounded by the remaining pre-phase budget, or 5 s during the check phase.
-- Retries: on 429 or 529, up to 2 retries with 250 ms then 750 ms backoff (or `retry-after`, if shorter than the remaining budget).
+- Retries: on 429, 503 or 529 (503 `model_unavailable` was observed intermittently on the first call in phase 1 measurements), up to 2 retries with 250 ms then 750 ms backoff (or `retry-after`, if shorter than the remaining budget).
 - Errors:
   - 401 → `Error::Precondition("TypeSafe key rejected. Check .env.local or Settings → Jev.")`.
   - Anything else → `Error::Provider("Jev: …")`.
@@ -303,3 +303,17 @@ Until phase 5, the new settings use their defaults (max agents 4, everything on)
 ## Documentation updates
 
 AGENTS.md (the agents module, Jev, key lookup and the `VITE_` warning, new events, and new cross-language contracts: section groups and the `UiEvent` additions), README (features, settings, `.env.local`), `.env.example`, `.gitignore`.
+
+## Measurements (phase 1, 2026-10-08)
+
+`cargo test -p livebrainstorm-core --test jev_live -- --ignored --nocapture`, model `jev-1.13.0`, from a home network in 3 runs of 3 rounds each:
+
+| Request | Observed latency |
+|---|---|
+| Gate Noul (two short drafts) | 219–402 ms (typically about 300 ms) |
+| Check Choice (claim + 3-line snippet) | 212–286 ms (typically about 255 ms) |
+
+- No cold-start penalty was visible: round 1 was no slower than rounds 2–3.
+- **503 `model_unavailable`** came back on the first call of two early attempts (the key authenticated fine) and cleared within about 20 s. The client now retries 503 like 429/529. Without that, a fact-check would have shown a notice on a transient blip.
+- The single check verdict (`createInvoice` returns `total: 0`, claim "ignores the cart's items") was `supports` at confidence 1.00, as it should be. The gate answered 0.98 for an edit that adds a new idea.
+- Phase 2 sizes `PRE_BUDGET` from these numbers: gate and rerank run concurrently at about 0.3 s each, so the planned 2,000 ms budget leaves wide margin and can be tightened to about 1,000 ms.

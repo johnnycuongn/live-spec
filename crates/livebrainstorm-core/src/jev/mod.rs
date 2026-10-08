@@ -18,7 +18,7 @@ use crate::{Error, Result};
 
 pub const DEFAULT_MODEL: &str = "jev-latest";
 const DEFAULT_BASE_URL: &str = "https://api.typesafe.ai";
-/// Waits before the first and second retry of a 429/529.
+/// Waits before the first and second retry of a 429, 503 or 529.
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(250), Duration::from_millis(750)];
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -107,7 +107,7 @@ impl Jev {
         Self { api_key, model, http, base_url: DEFAULT_BASE_URL.to_owned() }
     }
 
-    /// Asks every question about `state` in one request. Retries 429/529
+    /// Asks every question about `state` in one request. Retries 429/503/529
     /// twice and never runs past `timeout` in total.
     pub async fn ask(&self, state: &Value, questions: &BTreeMap<String, Question>, timeout: Duration) -> Result<Response> {
         let deadline = Instant::now() + timeout;
@@ -135,7 +135,7 @@ impl Jev {
             if status == 401 {
                 return Err(Error::Precondition("TypeSafe key rejected. Check .env.local or Settings → Jev.".into()));
             }
-            if (status == 429 || status == 529) && retries < RETRY_DELAYS.len() {
+            if matches!(status, 429 | 503 | 529) && retries < RETRY_DELAYS.len() {
                 let wait = retry_after(&resp).unwrap_or(RETRY_DELAYS[retries]);
                 if Instant::now() + wait < deadline {
                     tokio::time::sleep(wait).await;
@@ -233,6 +233,15 @@ mod tests {
     #[tokio::test]
     async fn retries_overload_then_answers() {
         let (url, hits) = serve(vec![Canned::new(529, "{}"), Canned::new(200, NOUL_OK)]).await;
+        let r = client(url).ask(&json!("x"), &urgent(), Duration::from_secs(5)).await.unwrap();
+        assert_eq!(r.noul("is_urgent"), Some(0.95));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retries_a_momentarily_unavailable_model() {
+        let busy = r#"{"detail":{"error_type":"model_unavailable","message":"The model is unavailable."}}"#;
+        let (url, hits) = serve(vec![Canned::new(503, busy), Canned::new(200, NOUL_OK)]).await;
         let r = client(url).ask(&json!("x"), &urgent(), Duration::from_secs(5)).await.unwrap();
         assert_eq!(r.noul("is_urgent"), Some(0.95));
         assert_eq!(hits.load(Ordering::SeqCst), 2);

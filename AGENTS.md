@@ -82,7 +82,8 @@ Brief building (`build_brief`, `Tier::Deep`) and downloads (`install_runtime`, `
 
 - **Fact-check ("Checked in code"):** after `done`, `commands::analyze` takes the Faults section (`prompt::section_body`) and runs `jev::check::run`. Plain code finds the evidence: backticked names and paths in each bullet, matched against the in-memory index (names found in more than a quarter of the files are too generic). Jev answers supports / contradicts / says_nothing per claim; ✓/✗ need confidence ≥ 0.8. Check events arrive after `done`, and the next keystroke aborts them with the rest of the task.
 - **Key lookup** (`secrets::jev_key`): Keychain account `typesafe-api-key`, then `TYPESAFE_API_KEY` in the environment, then, in debug builds only, `TYPESAFE_API_KEY` in the repo's `.env.local` (read by `env_file::read_value`, never exported). The key never crosses IPC. **Never prefix it `VITE_`:** Vite reads `.env.local` too and ships `VITE_*` variables to the webview bundle.
-- Jev failures never fail an analysis; they surface as one `notice` event.
+- Jev failures never fail an analysis; they surface as one `notice` event. The client retries 429/503/529 twice.
+- Live test against the real API (needs the key; prints latency): `cargo test -p livebrainstorm-core --test jev_live -- --ignored --nocapture`.
 
 ### Errors
 
