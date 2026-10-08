@@ -11,7 +11,7 @@ pub mod scan;
 pub(crate) mod terms;
 
 pub use brief::{BriefStatus, BriefStore, StoredBrief};
-pub use retrieve::{retrieve, Snippet};
+pub use retrieve::{retrieve, shortlist, Snippet};
 pub use scan::{scan, FileEntry, ProjectIndex};
 
 /// FNV-1a: tiny, stable across Rust versions (unlike `DefaultHasher`),

@@ -81,11 +81,22 @@ impl Default for JevSettings {
 }
 
 impl Settings {
-    /// Whether the Faults may be fact-checked by Jev. That sends claims and
-    /// code excerpts to TypeSafe, so the Local option ("private and offline")
-    /// never does, whatever the switch says.
+    /// Jev sends drafts and code excerpts to TypeSafe, so the Local option
+    /// ("private and offline") never uses it, whatever the switches say.
+    pub fn jev_allowed(&self) -> bool {
+        !matches!(self.provider, ProviderSettings::Local { .. })
+    }
+
     pub fn jev_check_enabled(&self) -> bool {
-        self.jev.check && !matches!(self.provider, ProviderSettings::Local { .. })
+        self.jev.check && self.jev_allowed()
+    }
+
+    pub fn jev_gate_enabled(&self) -> bool {
+        self.jev.gate && self.jev_allowed()
+    }
+
+    pub fn jev_rerank_enabled(&self) -> bool {
+        self.jev.rerank && self.jev_allowed()
     }
 
     /// Missing or corrupt files fall back to defaults instead of blocking startup.
@@ -140,11 +151,13 @@ mod tests {
     #[test]
     fn local_models_never_send_code_to_jev() {
         let mut s = Settings::default();
-        assert!(s.jev_check_enabled());
+        assert!(s.jev_allowed() && s.jev_check_enabled() && s.jev_gate_enabled() && s.jev_rerank_enabled());
         s.provider = ProviderSettings::Local { model_id: "qwen3-4b-instruct".into() };
-        assert!(!s.jev_check_enabled(), "the Local option promises nothing leaves this computer");
+        assert!(!s.jev_allowed(), "the Local option promises nothing leaves this computer");
+        assert!(!s.jev_check_enabled() && !s.jev_gate_enabled() && !s.jev_rerank_enabled());
         s.provider = Settings::default().provider;
-        s.jev.check = false;
-        assert!(!s.jev_check_enabled());
+        s.jev = JevSettings { gate: false, rerank: false, check: false, ..JevSettings::default() };
+        assert!(s.jev_allowed());
+        assert!(!s.jev_check_enabled() && !s.jev_gate_enabled() && !s.jev_rerank_enabled());
     }
 }

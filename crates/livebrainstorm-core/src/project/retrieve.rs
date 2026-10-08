@@ -27,8 +27,16 @@ const RECENT_CHARS: usize = 400;
 const RECENT_BOOST: f64 = 1.6;
 
 pub fn retrieve(index: &ProjectIndex, query: &str, max_files: usize, budget_chars: usize) -> Vec<Snippet> {
+    if max_files == 0 {
+        return vec![];
+    }
+    shortlist(index, query, max_files, budget_chars / max_files)
+}
+
+/// Up to `n` snippets in TF-IDF order, each at most `per_snippet_chars`.
+pub fn shortlist(index: &ProjectIndex, query: &str, n: usize, per_snippet_chars: usize) -> Vec<Snippet> {
     let weights = query_weights(query);
-    if weights.is_empty() || index.files.is_empty() || max_files == 0 {
+    if weights.is_empty() || index.files.is_empty() || n == 0 {
         return vec![];
     }
     let mut scored: Vec<(f64, usize)> = (0..index.files.len())
@@ -38,12 +46,10 @@ pub fn retrieve(index: &ProjectIndex, query: &str, max_files: usize, budget_char
         })
         .collect();
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
-
-    let per_file = budget_chars / max_files;
     scored
         .into_iter()
-        .take(max_files)
-        .map(|(_, i)| snippet(&index.files[i].rel, &index.files[i].content, &weights, per_file))
+        .take(n)
+        .map(|(_, i)| snippet(&index.files[i].rel, &index.files[i].content, &weights, per_snippet_chars))
         .collect()
 }
 
@@ -129,5 +135,16 @@ mod tests {
         let dir = fixture();
         let idx = scan(dir.path()).unwrap();
         assert!(retrieve(&idx, "the and to", 3, 1_000).is_empty());
+    }
+
+    #[test]
+    fn shortlist_keeps_keyword_order_and_clips_each_snippet() {
+        let dir = fixture();
+        let idx = scan(dir.path()).unwrap();
+        let hits = shortlist(&idx, "I want invoices to include discounts per cart", 20, 40);
+        assert_eq!(hits.len(), 3);
+        assert_eq!(hits[0].path, "src/billing/invoice.ts");
+        assert!(hits.iter().all(|s| s.text.len() <= 40));
+        assert_eq!(retrieve(&idx, "I want invoices to include discounts per cart", 2, 80), shortlist(&idx, "I want invoices to include discounts per cart", 2, 40));
     }
 }

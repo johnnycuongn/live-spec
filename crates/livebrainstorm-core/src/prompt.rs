@@ -40,7 +40,6 @@ Explore the repository in the current working directory with read-only tools: st
 manifests and entry points, then follow the main flows. Don't read every file.";
 
 const MAX_DRAFT_CHARS: usize = 12_000;
-const DRAFT_HEAD_CHARS: usize = 2_000;
 
 pub fn brief_request(index: &ProjectIndex, provider: &Provider) -> ChatRequest {
     let local = matches!(provider, Provider::OpenAiCompat(_));
@@ -154,11 +153,17 @@ pub fn section_body(markdown: &str, name: &str) -> Option<String> {
 /// Very long drafts: keep the opening (the framing) and the tail (where the
 /// user is typing now), drop the middle.
 fn shape_draft(draft: &str) -> String {
-    if draft.len() <= MAX_DRAFT_CHARS {
+    shape_draft_to(draft, MAX_DRAFT_CHARS)
+}
+
+/// `shape_draft` at any size: the first sixth is the opening, the rest the
+/// tail. Jev uses it to keep its `state` small.
+pub fn shape_draft_to(draft: &str, max_chars: usize) -> String {
+    if draft.len() <= max_chars {
         return draft.to_owned();
     }
-    let head_end = floor_boundary(draft, DRAFT_HEAD_CHARS);
-    let tail_start = floor_boundary(draft, draft.len() - (MAX_DRAFT_CHARS - DRAFT_HEAD_CHARS));
+    let head_end = floor_boundary(draft, max_chars / 6);
+    let tail_start = floor_boundary(draft, draft.len() - (max_chars - max_chars / 6));
     format!("{}\n[... middle of draft omitted ...]\n{}", &draft[..head_end], &draft[tail_start..])
 }
 
@@ -207,5 +212,14 @@ mod tests {
         assert_eq!(section_body(md, "Faults").as_deref(), Some("- `cache.ts` exists\n- second"));
         assert_eq!(section_body("**Faults:**\n- x\n### Questions for you\n- y", "Faults").as_deref(), Some("- x"));
         assert_eq!(section_body("Sure, here you go\n## Intent\n- a", "Faults"), None);
+    }
+
+    #[test]
+    fn drafts_shape_to_any_size() {
+        let draft = format!("{}TAIL", "é".repeat(5_000));
+        let shaped = shape_draft_to(&draft, 4_000);
+        assert!(shaped.starts_with('é') && shaped.ends_with("TAIL"));
+        assert!(shaped.len() < 4_100, "{}", shaped.len());
+        assert_eq!(shape_draft_to("short", 4_000), "short");
     }
 }
