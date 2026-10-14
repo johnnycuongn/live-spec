@@ -3,6 +3,7 @@ import { MiniMarkdown } from "./MiniMarkdown";
 import { Button } from "./ui";
 
 interface Props {
+  projectName: string;
   brief: StoredBrief | null;
   status: BriefStatus | null;
   building: boolean;
@@ -22,7 +23,9 @@ export function BriefDrawer(p: Props) {
       aria-label="Project brief"
     >
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-line px-5">
-        <h2 className="flex-1 text-[15px] font-semibold">Project brief</h2>
+        <h2 className="min-w-0 flex-1 truncate text-[15px] font-semibold">
+          Project brief <span className="font-normal text-muted">· {p.projectName}</span>
+        </h2>
         <Button onClick={p.onBuild} disabled={p.building}>
           {p.building ? "Building…" : p.brief ? "Rebuild brief" : "Build brief"}
         </Button>

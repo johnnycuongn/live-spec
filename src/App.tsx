@@ -1,220 +1,69 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { initialAnalysis } from "./lib/analysisState";
-import { activityLine } from "./lib/brief";
-import { onBriefStatus } from "./lib/events";
-import { api, errorMessage, type ProjectInstructions, type ProjectSummary, type Settings, type Tab, type Template } from "./lib/ipc";
-import { EMPTY_INSTRUCTIONS, instructionsLabel } from "./lib/instructions";
-import { browserStorage, importLegacy } from "./lib/legacyDrafts";
+import { api, errorMessage, type Settings } from "./lib/ipc";
 import { providerLabel } from "./lib/providerOptions";
-import { createSaver } from "./lib/saver";
-import { tabContext, type LoadedProject } from "./lib/tabContext";
-import { TabSession, type TabSessionDeps } from "./lib/tabSession";
+import { EMPTY_INSTRUCTIONS, instructionsLabel } from "./lib/instructions";
+import { useActions } from "./lib/actions";
+import { IDLE_BRIEF, projects, useProjects } from "./lib/projects";
+import { projectName, readCollapsed, rowTitle, windowTitle, writeCollapsed } from "./lib/tabList";
+import { sessionFor, tabs, useWorkspace } from "./lib/tabs";
 import { useTabSession } from "./lib/useTabSession";
 import { currentWindowId } from "./lib/windowId";
 import { TopBar } from "./components/TopBar";
+import { Sidebar } from "./components/Sidebar";
 import { DraftPane } from "./components/DraftPane";
 import { NotesPane } from "./components/NotesPane";
 import { BriefDrawer } from "./components/BriefDrawer";
 import { InstructionsDrawer } from "./components/InstructionsDrawer";
 import { TemplateList } from "./components/TemplateList";
 import { SettingsDialog } from "./components/SettingsDialog";
-
-/** One project's brief build, as this window sees it. */
-interface BriefRun {
-  building: boolean;
-  live: string;
-  activity: string[];
-  error: string | null;
-}
-
-const IDLE_BRIEF: BriefRun = { building: false, live: "", activity: [], error: null };
-
-/** A file the backend kept as `.bad`, named for the banner. */
-function unreadableNotice(path: string): string {
-  const file = path.split(/[\\/]/).at(-1) ?? path;
-  return file.startsWith("workspace.json")
-    ? `Couldn't read the saved windows; kept them as ${file}`
-    : `Couldn't read a tab; kept it as ${file}`;
-}
+import { Button, cx } from "./components/ui";
 
 export default function App() {
-  const windowId = useMemo(() => currentWindowId(), []);
+  const ws = useWorkspace();
+  const pj = useProjects();
   const [settings, setSettings] = useState<Settings | null>(null);
-  const settingsRef = useRef<Settings | null>(null);
-  useEffect(() => {
-    settingsRef.current = settings;
-  }, [settings]);
+  const [showSettings, setShowSettings] = useState(false);
+  const [showInstructions, setShowInstructions] = useState(false);
+  /** The project whose brief drawer is open; any project in the sidebar can open it. */
+  const [briefRoot, setBriefRoot] = useState<string | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(currentWindowId(), window.innerWidth));
 
-  // The window's active tab: its live analysis, and the project it reads.
-  const [session, setSession] = useState<TabSession | null>(null);
-  const sessionRef = useRef<TabSession | null>(null);
+  const session = ws.activeId ? (sessionFor(ws.activeId) ?? null) : null;
   const view = useTabSession(session);
   const root = session?.root ?? null;
-  const [project, setProject] = useState<LoadedProject | null>(null);
-  const [opening, setOpening] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [notices, setNotices] = useState<string[]>([]);
+  const summary = root !== null ? (pj.summaries[root] ?? null) : null;
+  const briefRun = root !== null ? (pj.briefs[root] ?? IDLE_BRIEF) : IDLE_BRIEF;
+  const instructions = pj.instructions[root ?? ""] ?? EMPTY_INSTRUCTIONS;
+  const activeSummary = ws.view?.tabs.find((t) => t.id === ws.activeId) ?? null;
+  const title = activeSummary ? rowTitle(activeSummary, view?.draft ?? null) : null;
 
-  const [instructions, setInstructions] = useState<ProjectInstructions>(EMPTY_INSTRUCTIONS);
-  // Whose instructions `instructions` holds ("" = no project); null while they load.
-  const [instructionsRoot, setInstructionsRoot] = useState<string | null>(null);
-  const [templates, setTemplates] = useState<Template[]>([]);
-  const [instructionsError, setInstructionsError] = useState<string | null>(null);
-  const [showInstructions, setShowInstructions] = useState(false);
-
-  const [briefs, setBriefs] = useState<Record<string, BriefRun>>({});
-  const [showBrief, setShowBrief] = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-
-  // Draft edits save 500 ms after typing stops, each under the tab it was typed in.
-  const draftSaver = useMemo(
-    () =>
-      createSaver<string>(
-        (tabId, draft) => api.saveDraft(tabId, draft).then(() => setSaveError(null)),
-        500,
-        (e) => setSaveError(`Couldn't save your draft: ${errorMessage(e)}`),
-      ),
-    [],
-  );
-  // Instruction edits, the same way, each under the project they were typed in.
-  const instructionsSaver = useMemo(
-    () =>
-      createSaver<ProjectInstructions>(api.saveProjectInstructions, 500, (e) =>
-        setInstructionsError(`Couldn't save instructions: ${errorMessage(e)}`),
-      ),
-    [],
-  );
   useEffect(() => {
-    // Closing the window doesn't unmount React, so flush when the page goes away too.
-    const flush = () => {
-      void draftSaver.flush();
-      void instructionsSaver.flush();
-    };
-    window.addEventListener("pagehide", flush);
-    return () => {
-      window.removeEventListener("pagehide", flush);
-      flush();
-    };
-  }, [draftSaver, instructionsSaver]);
-
-  const deps = useMemo<TabSessionDeps>(
-    () => ({
-      analyze: api.analyze,
-      saveDraft: (tabId, draft) => draftSaver.schedule(tabId, draft),
-      debounceMs: () => settingsRef.current?.debounceMs ?? 1200,
-    }),
-    [draftSaver],
-  );
-
-  const patchBrief = (r: string, f: (b: BriefRun) => BriefRun) =>
-    setBriefs((all) => ({ ...all, [r]: f(all[r] ?? IDLE_BRIEF) }));
-
-  /** The shown tab's project summary. A folder that can't be read keeps its message. */
-  const loadSummary = async (r: string) => {
-    try {
-      const summary = await api.projectSummary(r);
-      if (sessionRef.current?.root === r) setProject({ root: r, summary, error: null });
-    } catch (e) {
-      // The tab still shows its draft and notes, and analyses without code context.
-      if (sessionRef.current?.root === r) setProject({ root: r, summary: null, error: errorMessage(e) });
-    }
-  };
-
-  /** The shown tab's instructions ("" for no project), and the shared templates. */
-  const loadInstructions = async (r: string | null) => {
-    await instructionsSaver.flush(); // a pending edit must not lose to the read below
-    try {
-      const v = await api.getInstructions(r ?? "");
-      setTemplates(v.templates);
-      if (sessionRef.current?.root !== r) return;
-      setInstructions(v.project);
-      setInstructionsError(null);
-    } catch (e) {
-      if (sessionRef.current?.root !== r) return;
-      setInstructions(EMPTY_INSTRUCTIONS);
-      setInstructionsError(`Couldn't load instructions: ${errorMessage(e)}`);
-    }
-    setInstructionsRoot(r ?? "");
-  };
-
-  /** Shows `tab`: a new session for it, then its project and instructions. `known` is a summary just fetched. */
-  const show = (tab: Tab, known?: ProjectSummary) => {
-    sessionRef.current?.dispose(); // a run it started finishes in the backend and saves to its own tab
-    const s = new TabSession(tab, deps);
-    sessionRef.current = s;
-    setSession(s);
-    setShowBrief(false);
-    setShowInstructions(false);
-    setInstructionsRoot(null);
-    setProject(tab.root === null ? null : { root: tab.root, summary: known ?? null, error: null });
-    void loadInstructions(tab.root);
-    if (tab.root !== null && !known) void loadSummary(tab.root);
-  };
-
-  // Load this window's tabs once. StrictMode runs effects twice; the ref keeps it to one load.
-  const started = useRef(false);
-  useEffect(() => {
-    if (started.current) return;
-    started.current = true;
-    api.getSettings().then(setSettings);
-    void api.warmUp();
-    // Templates are shared, so load them even if this window's tabs don't load
-    // (a template save writes the whole list).
-    void api.getInstructions("").then((v) => setTemplates(v.templates));
-    void (async () => {
-      try {
-        let ws = await api.listWorkspace(windowId);
-        if (ws.fresh) {
-          // The first launch of this build: the drafts the old build kept in localStorage become tabs.
-          const failed = await importLegacy(windowId, browserStorage(), api.importLegacyDrafts);
-          if (failed) setLoadError(failed);
-          ws = await api.listWorkspace(windowId);
-        }
-        setNotices(ws.unreadable.map(unreadableNotice));
-        let tab = ws.active;
-        if (!tab && ws.tabs.length > 0) {
-          await api.activateTab(windowId, ws.tabs[0].id);
-          tab = await api.getTab(ws.tabs[0].id);
-        }
-        // An empty window still takes a draft: a tab with no project, as before tabs.
-        show(tab ?? (await api.createTab(windowId, null)));
-      } catch (e) {
-        setLoadError(errorMessage(e));
-      }
-    })();
-  }, []);
-
-  // A brief built in any window: the rescanned summary carries the new brief,
-  // and the new context re-reads the draft.
-  useEffect(() => {
-    const unlisten = onBriefStatus((e) => {
-      if (e.state === "building") {
-        patchBrief(e.root, (b) => (b.building ? b : { ...b, building: true, error: null }));
-      } else if (e.state === "done") {
-        patchBrief(e.root, (b) => ({ ...b, building: false }));
-        if (sessionRef.current?.root === e.root) void loadSummary(e.root);
-      } else {
-        const message = e.message ?? "Couldn't build the project brief.";
-        patchBrief(e.root, (b) => ({ ...b, building: false, error: b.error ?? message }));
-      }
+    void api.getSettings().then((s) => {
+      setSettings(s);
+      tabs.setDebounce(s.debounceMs);
     });
-    return () => void unlisten.then((u) => u());
+    void api.warmUp();
+    projects.start();
+    void tabs.load();
   }, []);
 
-  // The tab's context reaches its session only once both its project summary
-  // and its instructions have loaded.
-  const context = tabContext(root, project, instructionsRoot === null ? null : { root: instructionsRoot, current: instructions.current });
+  // A shown tab's project loads on first show; its context reaches the tab once summary and instructions are in.
   useEffect(() => {
-    if (session && context) session.setContext(context.key, context.instructions);
-  }, [session, context?.key, context?.instructions]);
+    if (session) projects.ensure(session.root);
+  }, [session]);
+
+  useEffect(() => {
+    document.title = windowTitle(title);
+  }, [title]);
 
   // Esc closes either drawer. The settings <dialog> handles its own Esc.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape" && !showSettings) {
-        setShowBrief(false);
+        setBriefRoot(null);
         setShowInstructions(false);
       }
     };
@@ -222,163 +71,188 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [showSettings]);
 
-  /** "Open a project…": this window's tab for that project, or a new one, as drafts were per project before tabs. */
-  const openFolder = async (path: string) => {
+  const toggleSidebar = () => {
+    const next = !collapsed;
+    writeCollapsed(currentWindowId(), next);
+    setCollapsed(next);
+  };
+
+  // "Open a project…": a new tab on the chosen folder.
+  const openFolder = async () => {
+    const dir = await open({ directory: true, title: "Choose a project folder" });
+    if (typeof dir !== "string") return;
     setOpening(true);
-    setLoadError(null);
+    setOpenError(null);
     try {
-      await draftSaver.flush(); // the tab you leave keeps its last edit
-      const summary = await api.openProject(path); // scans, replacing any loaded index
-      if (sessionRef.current?.root === summary.root) {
-        setProject({ root: summary.root, summary, error: null }); // a rescan of the project on screen
-        return;
-      }
-      const ws = await api.listWorkspace(windowId);
-      const existing = ws.tabs.find((t) => t.root === summary.root);
-      let tab: Tab;
-      if (existing) {
-        await api.activateTab(windowId, existing.id);
-        tab = await api.getTab(existing.id);
-      } else {
-        tab = await api.createTab(windowId, summary.root);
-      }
-      show(tab, summary);
+      await tabs.newTab(await projects.openFolder(dir));
     } catch (e) {
-      setLoadError(errorMessage(e));
+      setOpenError(errorMessage(e));
     } finally {
       setOpening(false);
     }
   };
 
-  const pickProject = async () => {
-    const dir = await open({ directory: true, title: "Choose a project folder" });
-    if (typeof dir === "string") await openFolder(dir);
-  };
-
-  const changeInstructions = (next: ProjectInstructions) => {
-    setInstructions(next);
-    setInstructionsError(null);
-    instructionsSaver.schedule(root ?? "", next);
-  };
-
-  const changeTemplates = async (next: Template[]) => {
-    setTemplates(next);
-    try {
-      await api.saveTemplates(next);
-      setInstructionsError(null);
-    } catch (e) {
-      setInstructionsError(`Couldn't save instructions: ${errorMessage(e)}`);
-    }
-  };
-
-  const restoreStarters = async () => {
-    try {
-      setTemplates(await api.restoreStarterTemplates());
-      setInstructionsError(null);
-    } catch (e) {
-      setInstructionsError(`Couldn't save instructions: ${errorMessage(e)}`);
-    }
-  };
-
-  const buildBrief = () => {
-    if (root === null || briefs[root]?.building) return;
-    const r = root;
+  const showBrief = (r: string) => {
     setShowInstructions(false);
-    setShowBrief(true);
-    patchBrief(r, () => ({ building: true, live: "", activity: [], error: null }));
-    api
-      .buildBrief(r, (ev) => {
-        if (ev.type === "text") {
-          const text = ev.text;
-          patchBrief(r, (b) => ({ ...b, live: b.live + text }));
-        } else if (ev.type === "activity") {
-          const line = activityLine(ev.label, ev.lane);
-          patchBrief(r, (b) => ({ ...b, activity: [...b.activity, line] }));
-        } else if (ev.type === "done") {
-          // The summary refreshes on `brief-status: done`, which every window receives.
-          patchBrief(r, (b) => ({ ...b, building: false }));
-        } else if (ev.type === "error") {
-          const message = ev.message;
-          patchBrief(r, (b) => ({ ...b, building: false, error: message }));
-        }
-      })
-      .catch((e) => patchBrief(r, (b) => ({ ...b, building: false, error: errorMessage(e) })));
+    projects.ensure(r);
+    setBriefRoot((current) => (current === r ? null : r));
   };
+
+  const buildBrief = (r: string) => {
+    setShowInstructions(false);
+    setBriefRoot(r);
+    projects.ensure(r);
+    projects.buildBrief(r);
+  };
+
+  // Phase 3 adds new-window and close-window, and routes its menu events here.
+  useActions({
+    "new-tab": () => void tabs.newTab(root),
+    "open-project": () => void openFolder(),
+    "reopen-tab": () => {
+      const last = ws.view?.closed[0];
+      if (last) void tabs.reopen(last.id);
+    },
+    "close-tab": () => {
+      if (ws.activeId) void tabs.close(ws.activeId);
+    },
+    "next-tab": () => tabs.next(1),
+    "prev-tab": () => tabs.next(-1),
+    "toggle-sidebar": toggleSidebar,
+    settings: () => setShowSettings(true),
+  });
 
   const saveSettings = async (s: Settings) => {
     await api.saveSettings(s);
     setSettings(s);
+    tabs.setDebounce(s.debounceMs);
   };
 
-  const summary = project !== null && project.root === root ? project.summary : null;
-  const brief = summary?.brief ?? null;
-  const run = root !== null ? (briefs[root] ?? IDLE_BRIEF) : IDLE_BRIEF;
-  const loadingProject = root !== null && summary === null && (project?.error ?? null) === null;
-  const errors = [loadError, project !== null && project.root === root ? project.error : null, saveError].filter(
-    (m): m is string => !!m,
-  );
-  const analysis = view
-    ? { ...view.analysis, stale: view.stale, rerun: () => session?.rerun() }
-    : { ...initialAnalysis, stale: false, rerun: () => {} };
+  // A folder that couldn't be opened or read: shown under the top bar, as a Precondition message.
+  const alert = openError ?? (root !== null ? (pj.summaryErrors[root] ?? null) : null);
+  const drawerSummary = briefRoot !== null ? (pj.summaries[briefRoot] ?? null) : null;
+  const drawerRun = briefRoot !== null ? (pj.briefs[briefRoot] ?? IDLE_BRIEF) : IDLE_BRIEF;
 
   return (
     <div className="flex h-full flex-col">
       <TopBar
-        project={summary}
-        opening={opening || loadingProject}
-        briefStatus={summary?.briefStatus ?? null}
-        briefBuilding={run.building}
+        tab={
+          session
+            ? {
+                projectName: root === null ? null : projectName(root),
+                briefStatus: summary?.briefStatus ?? null,
+                briefBuilding: briefRun.building,
+                instructionsLabel: instructionsLabel(instructions, pj.templates),
+              }
+            : null
+        }
         providerLabel={providerLabel(settings)}
-        instructionsLabel={instructionsLabel(instructions, templates)}
-        onOpenProject={pickProject}
+        sidebarOpen={!collapsed}
+        onToggleSidebar={toggleSidebar}
         onShowBrief={() => {
-          setShowInstructions(false);
-          setShowBrief((v) => !v);
+          if (root !== null) showBrief(root);
         }}
         onShowInstructions={() => {
-          setShowBrief(false);
+          setBriefRoot(null);
           setShowInstructions((v) => !v);
         }}
         onOpenSettings={() => setShowSettings(true)}
       />
-      {errors.map((m, i) => (
-        <p key={i} className="shrink-0 border-b border-line px-4 py-2 text-[13px] text-fault" role="alert">
-          {m}
+      {alert && (
+        <p className="shrink-0 border-b border-line px-4 py-2 text-[13px] text-fault" role="alert">
+          {alert}
         </p>
-      ))}
-      {notices.map((m, i) => (
-        <p key={i} className="shrink-0 border-b border-line px-4 py-2 text-[13px] text-muted">
-          {m}
-        </p>
-      ))}
+      )}
 
-      {/* Both panes fill the remaining height and scroll on their own. */}
-      <main className="relative grid min-h-0 flex-1 grid-cols-[minmax(0,3fr)_minmax(320px,2fr)]">
-        <DraftPane value={view?.draft ?? ""} onChange={(text) => session?.setDraft(text)} hasProject={!!summary} />
-        <NotesPane analysis={analysis} hasProject={!!summary} briefMissing={!brief && !run.building} onBuildBrief={buildBrief} />
-        {showBrief && summary && (
+      {/* Sidebar, draft and notes. The draft and notes panes scroll on their own. */}
+      <main
+        className={cx(
+          "relative grid min-h-0 flex-1",
+          collapsed ? "grid-cols-[minmax(0,3fr)_minmax(320px,2fr)]" : "grid-cols-[248px_minmax(0,3fr)_minmax(320px,2fr)]",
+        )}
+      >
+        <Sidebar
+          hidden={collapsed}
+          opening={opening}
+          providerLabel={providerLabel(settings)}
+          onOpenProject={() => void openFolder()}
+          onShowBrief={showBrief}
+          onBuildBrief={buildBrief}
+          onOpenSettings={() => setShowSettings(true)}
+        />
+        {session && view ? (
+          <>
+            {/* Keyed by tab, so the textarea's undo history and the notes' local state never cross tabs.
+                Sibling keys must differ, hence the prefixes. */}
+            <DraftPane
+              key={`draft:${session.id}`}
+              value={view.draft}
+              onChange={(text) => session.setDraft(text)}
+              hasProject={root !== null}
+            />
+            <NotesPane
+              key={`notes:${session.id}`}
+              view={view}
+              hasProject={root !== null}
+              briefMissing={summary !== null && !summary.brief && !briefRun.building}
+              onBuildBrief={() => {
+                if (root !== null) buildBrief(root);
+              }}
+              onRerun={() => session.rerun()}
+              onView={(i) => session.view(i)}
+            />
+          </>
+        ) : (
+          <section className="col-span-2 grid place-items-center bg-page" aria-label="No tab open">
+            {!ws.view && ws.error && (
+              <p className="text-[13px] text-fault" role="alert">
+                {ws.error}
+              </p>
+            )}
+            {ws.view && (
+              <div className="grid justify-items-center gap-3 text-center">
+                <p className="text-[13px] text-muted">No tab is open in this window.</p>
+                <div className="flex gap-2">
+                  <Button variant="primary" onClick={() => void openFolder()} disabled={opening}>
+                    {opening ? "Reading project…" : "Open a project…"}
+                  </Button>
+                  <Button variant="ghost" onClick={() => void tabs.newTab(null)}>
+                    New tab without a project
+                  </Button>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+        {briefRoot !== null && (
           <BriefDrawer
-            brief={brief}
-            status={summary.briefStatus}
-            building={run.building}
-            liveText={run.live}
-            activity={run.activity}
-            error={run.error}
-            onBuild={buildBrief}
-            onClose={() => setShowBrief(false)}
+            projectName={projectName(briefRoot)}
+            brief={drawerSummary?.brief ?? null}
+            status={drawerSummary?.briefStatus ?? null}
+            building={drawerRun.building}
+            liveText={drawerRun.live}
+            activity={drawerRun.activity}
+            error={drawerRun.error}
+            onBuild={() => buildBrief(briefRoot)}
+            onClose={() => setBriefRoot(null)}
           />
         )}
-        {showInstructions && instructionsRoot !== null && (
+        {showInstructions && session && (
           <InstructionsDrawer
-            key={instructionsRoot}
+            key={root ?? ""}
             instructions={instructions}
-            templates={templates}
+            templates={pj.templates}
             localModel={settings?.provider.kind === "local"}
-            error={instructionsError}
-            onChange={changeInstructions}
+            error={pj.instructionsError}
+            onChange={(next) => projects.changeInstructions(root, next)}
             onClose={() => setShowInstructions(false)}
           >
-            <TemplateList templates={templates} current={instructions.current} onSave={changeTemplates} onRestore={restoreStarters} />
+            <TemplateList
+              templates={pj.templates}
+              current={instructions.current}
+              onSave={(next) => void projects.changeTemplates(next)}
+              onRestore={() => void projects.restoreStarters()}
+            />
           </InstructionsDrawer>
         )}
       </main>
