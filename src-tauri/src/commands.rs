@@ -10,6 +10,7 @@ use livebrainstorm_core::analysis::{self, PreInput, PreOutcome, PRE_BUDGET};
 use livebrainstorm_core::jev::check::{self, CheckEvent, CheckResult};
 use livebrainstorm_core::llm::Chunk;
 use livebrainstorm_core::local::{self, catalog, download, runtime, LocalInventory};
+use livebrainstorm_core::project::explore;
 use livebrainstorm_core::project::{self, BriefStatus, StoredBrief};
 use livebrainstorm_core::settings::{ProviderSettings, Settings, Tier};
 use livebrainstorm_core::{prompt, Error, Result};
@@ -163,15 +164,41 @@ pub async fn build_brief(app: AppHandle, on_event: Channel<UiEvent>) -> Result<(
 
     let task = tauri::async_runtime::spawn(async move {
         let result = async {
+            let settings = task_app.state::<AppState>().settings();
             let provider = provider::resolve(&task_app, Tier::Deep).await?;
-            let req = prompt::brief_request(&index, &provider);
-            let text = provider.stream(&req, &mut on_chunk(&on_event)).await?;
+            let slices = explore::slices(&index, settings.effective_brief_agents());
+            let (text, agents) = if slices.len() <= 1 {
+                // One explorer: today's path, unchanged.
+                let req = prompt::brief_request(&index, &provider);
+                (provider.stream(&req, &mut on_chunk(&on_event)).await?, 1)
+            } else {
+                // Explorers map their slices at once; their activity shows as
+                // "Agent k". A `for` loop, not `.map(…)`, inside this spawned task.
+                let n = slices.len();
+                let mut explorers = Vec::new();
+                for (k, slice) in slices.iter().enumerate() {
+                    let req = prompt::explorer_request(&index, &provider, slice, k + 1, n);
+                    let (provider, on_event) = (&provider, &on_event);
+                    explorers.push(async move {
+                        let lane = k + 1;
+                        let mut sink = |chunk: Chunk| {
+                            if let Chunk::Activity(label) = chunk {
+                                send(on_event, UiEvent::Activity { label, lane });
+                            }
+                        };
+                        provider.stream(&req, &mut sink).await
+                    });
+                }
+                let (notes, unmapped) = explore::collect_notes(&slices, agents::run_limited(n, explorers).await)?;
+                let req = prompt::merge_request(&index, &provider, &notes, &unmapped);
+                (provider.stream(&req, &mut on_chunk(&on_event)).await?, n)
+            };
             let brief = StoredBrief {
                 root: index.root.display().to_string(),
                 fingerprint: index.fingerprint.clone(),
                 text: text.trim().to_owned(),
                 created_at: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
-                source: task_app.state::<AppState>().settings().provider.label(),
+                source: explore::brief_source(&settings.provider.label(), agents),
             };
             let state = task_app.state::<AppState>();
             state.briefs.save(&brief)?;
