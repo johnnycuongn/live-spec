@@ -14,8 +14,9 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use super::{ChatRequest, Chunk, OnChunk, Secret};
+use super::{ChatRequest, Chunk, OnChunk, Secret, Usage};
 use crate::settings::Effort;
+use crate::usage::price;
 use crate::{Error, Result};
 
 /// The only tools a brief explorer gets. An allowlist (`--tools`), not a
@@ -119,22 +120,30 @@ impl ClaudeCli {
         let mut lines = BufReader::new(child.stdout.take().expect("stdout piped")).lines();
         let mut streamed = String::new();
         let mut result: Option<(Option<String>, bool)> = None;
+        let mut reported: Vec<Usage> = Vec::new();
 
         while let Some(line) = lines.next_line().await? {
-            for event in parse_line(&line) {
+            for event in parse_line(&line, &self.model) {
                 match event {
                     CliEvent::Text(t) => {
                         streamed.push_str(&t);
                         on_chunk(Chunk::Text(t));
                     }
                     CliEvent::ToolUse(label) => on_chunk(Chunk::Activity(label)),
-                    CliEvent::Result { text, is_error } => result = Some((text, is_error)),
+                    CliEvent::Result { text, is_error, usage } => {
+                        result = Some((text, is_error));
+                        reported = usage;
+                    }
                 }
             }
         }
 
         let status = child.wait().await?;
         let stderr = stderr_task.await.unwrap_or_default();
+        // Before the outcome: a run that failed after the model ran was still billed.
+        for usage in reported {
+            on_chunk(Chunk::Usage(usage));
+        }
 
         match result {
             // `result` is the final assistant message; for multi-turn exploration
@@ -175,12 +184,13 @@ fn cli_error(result_text: Option<&str>, stderr: &str) -> String {
 enum CliEvent {
     Text(String),
     ToolUse(String),
-    Result { text: Option<String>, is_error: bool },
+    Result { text: Option<String>, is_error: bool, usage: Vec<Usage> },
 }
 
 /// One NDJSON line from `--output-format stream-json`. Unknown shapes are
-/// ignored so CLI upgrades that add event types don't break us.
-fn parse_line(line: &str) -> Vec<CliEvent> {
+/// ignored so CLI upgrades that add event types don't break us. `model` is
+/// the model we asked for; usage without a per-model breakdown is filed under it.
+fn parse_line(line: &str, model: &str) -> Vec<CliEvent> {
     let Ok(v) = serde_json::from_str::<Value>(line) else { return vec![] };
     match v["type"].as_str() {
         Some("stream_event") => {
@@ -204,9 +214,53 @@ fn parse_line(line: &str) -> Vec<CliEvent> {
         Some("result") => vec![CliEvent::Result {
             text: v["result"].as_str().map(str::to_owned),
             is_error: v["is_error"].as_bool().unwrap_or(false),
+            usage: result_usage(&v, model),
         }],
         _ => vec![],
     }
+}
+
+/// What a `result` event says the run used: one `Usage` per model in
+/// `modelUsage`, priced by its `costUSD` (their sum is `total_cost_usd`).
+/// Without `modelUsage`, the `usage` totals with `total_cost_usd`, under the
+/// requested model. A record with no reported cost is priced from
+/// `usage::PRICES` (None if the table doesn't know the model). Empty when the
+/// event reports neither. Sorted by model.
+fn result_usage(v: &Value, requested: &str) -> Vec<Usage> {
+    let n = |x: &Value| x.as_u64().unwrap_or(0);
+    let mut usage: Vec<Usage> = if let Some(models) = v["modelUsage"].as_object().filter(|m| !m.is_empty()) {
+        models
+            .iter()
+            .map(|(model, u)| Usage {
+                model: model.clone(),
+                input: n(&u["inputTokens"]),
+                cache_write: n(&u["cacheCreationInputTokens"]),
+                cache_read: n(&u["cacheReadInputTokens"]),
+                output: n(&u["outputTokens"]),
+                cost_usd: u["costUSD"].as_f64(),
+            })
+            .collect()
+    } else if v["usage"].is_object() {
+        let u = &v["usage"];
+        vec![Usage {
+            model: requested.to_owned(),
+            input: n(&u["input_tokens"]),
+            cache_write: n(&u["cache_creation_input_tokens"]),
+            cache_read: n(&u["cache_read_input_tokens"]),
+            output: n(&u["output_tokens"]),
+            cost_usd: v["total_cost_usd"].as_f64(),
+        }]
+    } else {
+        Vec::new()
+    };
+    for u in &mut usage {
+        if u.cost_usd.is_none() {
+            let listed = price(&u.model).map(|p| p.cost(u));
+            u.cost_usd = listed;
+        }
+    }
+    usage.sort_by(|a, b| a.model.cmp(&b.model));
+    usage
 }
 
 fn describe_tool(name: &Value, input: &Value) -> String {
@@ -222,24 +276,120 @@ fn describe_tool(name: &Value, input: &Value) -> String {
 mod tests {
     use super::*;
 
+    /// The `result` event recorded on 2026-10-14 with `--model haiku`, verbatim.
+    const FIXTURE: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"Hi!","total_cost_usd":0.00046765,"usage":{"input_tokens":2,"cache_creation_input_tokens":2198,"cache_read_input_tokens":535,"output_tokens":45},"modelUsage":{"claude-haiku-5-5":{"inputTokens":2,"outputTokens":45,"cacheReadInputTokens":535,"cacheCreationInputTokens":2198,"costUSD":0.00046765,"canonicalModel":"claude-haiku-5-5","costBasis":"list"}}}"#;
+
+    /// A run that used two models (for example a sonnet run whose sub-tasks used haiku).
+    const TWO_MODELS: &str = r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","total_cost_usd":0.01283,"usage":{"input_tokens":12,"cache_creation_input_tokens":4100,"cache_read_input_tokens":900,"output_tokens":610},"modelUsage":{"claude-sonnet-5-5":{"inputTokens":10,"outputTokens":580,"cacheReadInputTokens":900,"cacheCreationInputTokens":4100,"costUSD":0.0124,"costBasis":"list"},"claude-haiku-5-5":{"inputTokens":2,"outputTokens":30,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.00043,"costBasis":"list"}}}"#;
+
+    fn haiku(input: u64, cache_write: u64, cache_read: u64, output: u64, cost: f64) -> Usage {
+        Usage { model: "claude-haiku-5-5".into(), input, cache_write, cache_read, output, cost_usd: Some(cost) }
+    }
+
     #[test]
     fn parses_text_delta() {
         let l = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}}"#;
-        assert_eq!(parse_line(l), vec![CliEvent::Text("Hi".into())]);
+        assert_eq!(parse_line(l, "haiku"), vec![CliEvent::Text("Hi".into())]);
     }
 
     #[test]
     fn parses_tool_use_and_result() {
         let a = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"x"},{"type":"tool_use","name":"Read","input":{"file_path":"src/main.rs"}}]}}"#;
-        assert_eq!(parse_line(a), vec![CliEvent::ToolUse("Read src/main.rs".into())]);
+        assert_eq!(parse_line(a, "haiku"), vec![CliEvent::ToolUse("Read src/main.rs".into())]);
         let r = r#"{"type":"result","subtype":"success","is_error":false,"result":"done"}"#;
-        assert_eq!(parse_line(r), vec![CliEvent::Result { text: Some("done".into()), is_error: false }]);
+        assert_eq!(
+            parse_line(r, "haiku"),
+            vec![CliEvent::Result { text: Some("done".into()), is_error: false, usage: vec![] }],
+            "a result without usage reports none"
+        );
     }
 
     #[test]
     fn ignores_noise() {
-        assert!(parse_line("not json").is_empty());
-        assert!(parse_line(r#"{"type":"system","subtype":"init"}"#).is_empty());
+        assert!(parse_line("not json", "haiku").is_empty());
+        assert!(parse_line(r#"{"type":"system","subtype":"init"}"#, "haiku").is_empty());
+    }
+
+    #[test]
+    fn the_recorded_result_costs_exactly_what_the_cli_said() {
+        let events = parse_line(FIXTURE, "haiku");
+        assert_eq!(
+            events,
+            vec![CliEvent::Result {
+                text: Some("Hi!".into()),
+                is_error: false,
+                usage: vec![haiku(2, 2198, 535, 45, 0.00046765)],
+            }]
+        );
+        let CliEvent::Result { usage, .. } = &events[0] else { unreachable!() };
+        let total: f64 = usage.iter().filter_map(|u| u.cost_usd).sum();
+        let cli: Value = serde_json::from_str(FIXTURE).unwrap();
+        assert_eq!(Some(total), cli["total_cost_usd"].as_f64(), "the ledger's cost equals total_cost_usd");
+    }
+
+    #[test]
+    fn a_run_on_two_models_reports_one_usage_per_model() {
+        let events = parse_line(TWO_MODELS, "sonnet");
+        let [CliEvent::Result { usage, .. }] = &events[..] else { panic!("one result") };
+        let sonnet = Usage { model: "claude-sonnet-5-5".into(), input: 10, cache_write: 4100, cache_read: 900, output: 580, cost_usd: Some(0.0124) };
+        assert_eq!(usage, &vec![haiku(2, 0, 0, 30, 0.00043), sonnet], "sorted by model, whatever the JSON order");
+        let total: f64 = usage.iter().filter_map(|u| u.cost_usd).sum();
+        assert!((total - 0.01283).abs() < 1e-12);
+    }
+
+    #[test]
+    fn without_model_usage_the_totals_are_filed_under_the_requested_model() {
+        let r = r#"{"type":"result","is_error":false,"result":"x","total_cost_usd":0.002,"usage":{"input_tokens":5,"cache_creation_input_tokens":10,"cache_read_input_tokens":20,"output_tokens":30}}"#;
+        let want = Usage { model: "haiku".into(), input: 5, cache_write: 10, cache_read: 20, output: 30, cost_usd: Some(0.002) };
+        assert_eq!(parse_line(r, "haiku"), vec![CliEvent::Result { text: Some("x".into()), is_error: false, usage: vec![want.clone()] }]);
+        let no_cost = r.replace(r#""total_cost_usd":0.002,"#, "");
+        let events = parse_line(&no_cost, "haiku");
+        let [CliEvent::Result { usage, .. }] = &events[..] else { panic!("one result") };
+        let cost = usage[0].cost_usd.expect("no cost reported: priced from usage::PRICES");
+        assert!((cost - (35.0 * 0.10 + 30.0 * 0.50) / 1e6).abs() < 1e-15, "35 input-rate tokens and 30 output at haiku's list price");
+        let events = parse_line(&no_cost, "claude-sonnet-9");
+        let [CliEvent::Result { usage, .. }] = &events[..] else { panic!("one result") };
+        let unknown = Usage { model: "claude-sonnet-9".into(), cost_usd: None, ..want };
+        assert_eq!(usage, &vec![unknown], "a model the table doesn't know stays unpriced");
+    }
+
+    /// A stand-in `claude` that ignores its arguments, swallows the prompt and prints `lines`.
+    #[cfg(unix)]
+    fn fake_cli(dir: &std::path::Path, lines: &[&str], code: i32) -> ClaudeCli {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("claude");
+        let script = format!("#!/bin/sh\ncat > /dev/null\ncat <<'JSON'\n{}\nJSON\nexit {code}\n", lines.join("\n"));
+        std::fs::write(&path, script).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ClaudeCli::new(path, "haiku", None)
+    }
+
+    #[cfg(unix)]
+    async fn run(cli: &ClaudeCli) -> (Result<String>, Vec<Chunk>) {
+        let mut chunks = Vec::new();
+        let result = cli.stream(&request(false), &mut |c: Chunk| chunks.push(c)).await;
+        (result, chunks)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_run_reports_its_usage_after_the_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let delta = r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi!"}}}"#;
+        let (result, chunks) = run(&fake_cli(dir.path(), &[delta, FIXTURE], 0)).await;
+        assert_eq!(result.unwrap(), "Hi!");
+        assert_eq!(chunks, vec![Chunk::Text("Hi!".into()), Chunk::Usage(haiku(2, 2198, 535, 45, 0.00046765))]);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_error_result_still_reports_its_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let failed = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"overloaded","total_cost_usd":0.0002,"usage":{"input_tokens":2000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0}}"#;
+        let (result, chunks) = run(&fake_cli(dir.path(), &[failed], 1)).await;
+        assert_eq!(result.unwrap_err().to_string(), "Claude Code failed: overloaded");
+        let billed = Usage { model: "haiku".into(), input: 2000, cache_write: 0, cache_read: 0, output: 0, cost_usd: Some(0.0002) };
+        assert_eq!(chunks, vec![Chunk::Usage(billed)], "the input was billed even though the run failed");
     }
 
     fn request(allow_repo_tools: bool) -> ChatRequest {
