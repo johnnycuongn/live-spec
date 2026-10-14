@@ -8,7 +8,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 
 use crate::store::{self, Loaded};
-use crate::Result;
+use crate::{Error, Result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -106,6 +106,19 @@ pub struct InstructionStore {
     lock: Mutex<()>,
 }
 
+/// What a load found, as the file to work from. A file that didn't parse and
+/// couldn't be set aside as `.bad` is an error: the next save would overwrite it.
+fn start_from(loaded: Loaded<InstructionsFile>) -> Result<InstructionsFile> {
+    match loaded {
+        Loaded::Parsed(file) => Ok(file),
+        Loaded::Missing | Loaded::Corrupt { kept: Some(_) } => Ok(InstructionsFile::default()),
+        Loaded::Corrupt { kept: None } => Err(Error::Precondition(
+            "Couldn't read your saved instructions and couldn't keep a copy; free up instructions.json and try again."
+                .into(),
+        )),
+    }
+}
+
 impl InstructionStore {
     pub fn new(path: PathBuf) -> Self {
         Self { path, lock: Mutex::new(()) }
@@ -167,10 +180,7 @@ impl InstructionStore {
         // being overwritten by the next save (settings.json just resets; this
         // holds the user's writing). A file that can't be read right now is an
         // error, so `update` never writes over it.
-        Ok(match store::load_json(&self.path)? {
-            Loaded::Parsed(file) => file,
-            Loaded::Missing | Loaded::Corrupt { .. } => InstructionsFile::default(),
-        })
+        start_from(store::load_json(&self.path)?)
     }
 
     /// Atomic write: never leaves a half-written file behind.
@@ -231,6 +241,17 @@ mod tests {
         assert!(store.save_project("/p", ProjectInstructions { current: "x".into(), ..Default::default() }).is_err());
         assert!(dir.path().join("instructions.json").is_dir(), "nothing was renamed or replaced");
         assert!(!dir.path().join("instructions.json.bad").exists(), "a read failure is not corruption");
+    }
+
+    #[test]
+    fn a_corrupt_file_that_could_not_be_kept_is_an_error_not_defaults() {
+        let err = start_from(Loaded::Corrupt { kept: None }).unwrap_err();
+        assert!(matches!(&err, Error::Precondition(m) if m.contains("couldn't keep a copy")), "{err}");
+        assert_eq!(start_from(Loaded::Missing).unwrap(), InstructionsFile::default());
+        assert_eq!(
+            start_from(Loaded::Corrupt { kept: Some(PathBuf::from("instructions.json.bad")) }).unwrap(),
+            InstructionsFile::default()
+        );
     }
 
     #[test]
