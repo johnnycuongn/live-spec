@@ -3,6 +3,18 @@ import type { ButtonHTMLAttributes, ReactNode } from "react";
 
 export const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" ");
 
+/** The accent rule's states: solid when notes are current, animated while thinking, dashed when the draft has moved on. */
+export type RuleState = "idle" | "thinking" | "stale" | "fresh";
+
+/** State classes for the accent rule, shared by the rule between the panes and each tab row's rule. */
+export const RULE: Record<RuleState, string> = {
+  idle: "bg-accent scale-y-0",
+  fresh: "bg-accent",
+  thinking: "bg-accent animate-fill motion-reduce:animate-none motion-reduce:opacity-50",
+  // Dashed: the notes are still there, but your draft has moved on.
+  stale: "bg-[repeating-linear-gradient(to_bottom,var(--color-accent)_0_6px,transparent_6px_12px)] opacity-70",
+};
+
 type Variant = "default" | "primary" | "ghost" | "link";
 
 const VARIANTS: Record<Variant, string> = {

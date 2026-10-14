@@ -3,11 +3,10 @@ import { VERDICT, checkLocation, checkSummary, plainClaim } from "../lib/checks"
 import { SECTIONS, parseSections, type SectionKey } from "../lib/sections";
 import type { AnalysisState } from "../lib/analysisState";
 import { MiniMarkdown } from "./MiniMarkdown";
-import { Button, Eyebrow, cx } from "./ui";
+import { Button, Eyebrow, RULE, cx, type RuleState } from "./ui";
 
 /** The shown tab's analysis, whether the draft has moved on since, and "Try again". */
 type Analysis = AnalysisState & { stale: boolean; rerun: () => void };
-type RuleState = "idle" | "thinking" | "stale" | "fresh";
 
 interface Props {
   analysis: Analysis;
@@ -21,14 +20,6 @@ const DOT: Record<SectionKey, string> = {
   faults: "bg-fault",
   directions: "bg-accent",
   questions: "bg-question",
-};
-
-const RULE: Record<RuleState, string> = {
-  idle: "bg-accent scale-y-0",
-  fresh: "bg-accent",
-  thinking: "bg-accent animate-fill motion-reduce:animate-none motion-reduce:opacity-50",
-  // Dashed: the notes are still there, but your draft has moved on.
-  stale: "bg-[repeating-linear-gradient(to_bottom,var(--color-accent)_0_6px,transparent_6px_12px)] opacity-70",
 };
 
 function statusText(a: Analysis) {
