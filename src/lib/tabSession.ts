@@ -35,6 +35,15 @@ export interface TabSessionDeps {
   getTab?: (tabId: string) => Promise<Tab>;
 }
 
+export interface TabSessionOptions {
+  /**
+   * The window will call setContext at least once (even with a null key). Until it does, a pause
+   * that fires doesn't run: it waits for that first context, so no analysis goes out without the
+   * session instructions. Off by default, so a session used on its own runs as before.
+   */
+  awaitContext?: boolean;
+}
+
 /** What React renders. A new object only when something changed (useSyncExternalStore). */
 export interface TabView {
   draft: string;
@@ -69,11 +78,18 @@ export class TabSession {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private requestId = 0;
   private historyRequest = 0;
+  private readonly awaitContext: boolean;
+  /** False until the window's first setContext, when `awaitContext` is on. */
+  private contextReady: boolean;
+  /** A run that came due before the first context: `rerun` says whether it was "Try again". */
+  private waiting: { rerun: boolean } | null = null;
 
-  constructor(tab: Tab, deps: TabSessionDeps) {
+  constructor(tab: Tab, deps: TabSessionDeps, opts: TabSessionOptions = {}) {
     this.id = tab.id;
     this.root = tab.root;
     this.deps = deps;
+    this.awaitContext = opts.awaitContext === true;
+    this.contextReady = !this.awaitContext;
     this.restore(tab);
   }
 
@@ -95,6 +111,8 @@ export class TabSession {
    */
   restore(tab: Tab): void {
     this.clearTimer();
+    this.waiting = null;
+    this.contextReady = !this.awaitContext;
     this.requestId++; // events from a run before the restore no longer apply
     this.historyRequest++; // ...and so does a history fetch from before it
     const latest = tab.history[0];
@@ -125,11 +143,21 @@ export class TabSession {
    * with no saved analysis gets is not a change: it starts no run. A null key
    * means the project couldn't be read: the tab keeps the context its saved
    * notes ran with, so a missing folder never re-runs them, and the next pause
-   * still reads the new instructions.
+   * still reads the new instructions. With `awaitContext`, a run that came due
+   * before the first call goes out now (on a hidden tab: on activate()).
    */
   setContext(key: string | null, instructions: string): void {
+    if (this.disposed) return;
     this.instructions = instructions;
-    if (key === null || key === this.context || this.disposed) return;
+    this.contextReady = true;
+    const waiting = this.waiting;
+    if (waiting && this.active) {
+      this.waiting = null;
+      if (key !== null) this.context = key;
+      this.run(this.draft, waiting.rerun); // reads the context just set
+      return;
+    }
+    if (key === null || key === this.context) return;
     const first = this.context === "";
     this.context = key;
     // A tab with no saved analysis has no context until the window hands it one. That first
@@ -144,6 +172,12 @@ export class TabSession {
   activate(): void {
     if (this.active || this.disposed) return;
     this.active = true;
+    const waiting = this.waiting;
+    if (waiting && this.contextReady) {
+      this.waiting = null;
+      this.run(this.draft, waiting.rerun);
+      return;
+    }
     if (!this.contextDirty) return;
     this.contextDirty = false;
     this.resetAndSchedule(); // schedule() skips drafts under MIN_CHARS
@@ -163,6 +197,7 @@ export class TabSession {
   /** Clears the timer and drops late events. close_tab and move_tab cancel the backend run. */
   dispose(): void {
     this.disposed = true;
+    this.waiting = null;
     this.clearTimer();
     this.requestId++;
     this.historyRequest++;
@@ -186,6 +221,7 @@ export class TabSession {
 
   private schedule() {
     this.clearTimer();
+    this.waiting = null; // a new pause replaces one that was waiting for the context
     const norm = normalize(this.draft);
     if (norm.length < MIN_CHARS || norm === this.lastSent) return;
     this.timer = setTimeout(() => {
@@ -201,6 +237,10 @@ export class TabSession {
 
   private run(text: string, rerun: boolean) {
     this.clearTimer();
+    if (!this.contextReady) {
+      this.waiting = { rerun };
+      return;
+    }
     const id = ++this.requestId;
     const ctx = this.context;
     this.lastSent = normalize(text);

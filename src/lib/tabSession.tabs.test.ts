@@ -3,7 +3,7 @@
 // can be browsed and stays current.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot, Tab, UiEvent } from "./ipc";
-import { TabSession, type TabSessionDeps } from "./tabSession";
+import { TabSession, type TabSessionDeps, type TabSessionOptions } from "./tabSession";
 
 const DRAFT = "Retry failed checkout payments with backoff in the worker";
 
@@ -43,7 +43,7 @@ interface Call {
   emit: (e: UiEvent) => void;
 }
 
-function harness(t: Tab, getTab?: TabSessionDeps["getTab"]) {
+function harness(t: Tab, getTab?: TabSessionDeps["getTab"], opts?: TabSessionOptions) {
   const calls: Call[] = [];
   const deps: TabSessionDeps = {
     analyze: (_id, draft, previousDraft, instructions, context, onEvent) => {
@@ -54,7 +54,7 @@ function harness(t: Tab, getTab?: TabSessionDeps["getTab"]) {
     debounceMs: () => 1000,
     getTab,
   };
-  return { s: new TabSession(t, deps), calls };
+  return { s: new TabSession(t, deps, opts), calls };
 }
 
 /** Lets promise callbacks run; fake timers don't touch microtasks. */
@@ -326,5 +326,59 @@ describe("requests", () => {
     expect(calls).toHaveLength(1);
     calls[0].emit({ type: "done", text: "## Intent\n- late" });
     expect(s.getState().analysis.status).toBe("thinking");
+  });
+});
+
+describe("a pause before the tab has its context", () => {
+  const waiting = { awaitContext: true };
+
+  it("waits for the first setContext, then runs with the instructions", () => {
+    const { s, calls } = harness(tab({ draft: "", history: [] }), undefined, waiting);
+    s.setDraft(DRAFT);
+    vi.advanceTimersByTime(5000);
+    expect(calls).toEqual([]);
+    s.setContext("/p|1|", "Focus.");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ draft: DRAFT, instructions: "Focus.", context: "/p|1|" });
+  });
+
+  it("still takes the first context without a run when no pause is waiting", () => {
+    const { s, calls } = harness(tab({ history: [] }), undefined, waiting);
+    s.setContext("/p|1|", "Focus.");
+    vi.advanceTimersByTime(5000);
+    expect(calls).toEqual([]);
+  });
+
+  it("a null key (project unreadable) counts as the first context", () => {
+    const { s, calls } = harness(tab(), undefined, waiting); // saved notes ran with "/p|1|"
+    s.setDraft(`${DRAFT}, and alert after three`);
+    vi.advanceTimersByTime(1000);
+    expect(calls).toEqual([]);
+    s.setContext(null, "Focus.");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ instructions: "Focus.", context: "/p|1|" });
+  });
+
+  it("a hidden tab waits for activate()", () => {
+    const { s, calls } = harness(tab({ draft: "", history: [] }), undefined, waiting);
+    s.setDraft(DRAFT);
+    s.deactivate();
+    vi.advanceTimersByTime(1000);
+    s.setContext("/p|1|", "Focus.");
+    expect(calls).toEqual([]);
+    s.activate();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ instructions: "Focus.", context: "/p|1|" });
+  });
+
+  it("typing again replaces the waiting pause with a new one", () => {
+    const { s, calls } = harness(tab({ draft: "", history: [] }), undefined, waiting);
+    s.setDraft(DRAFT);
+    vi.advanceTimersByTime(1000);
+    s.setDraft(`${DRAFT}, and alert after three`);
+    s.setContext("/p|1|", "");
+    expect(calls).toEqual([]);
+    vi.advanceTimersByTime(1000);
+    expect(calls.map((c) => c.draft)).toEqual([`${DRAFT}, and alert after three`]);
   });
 });

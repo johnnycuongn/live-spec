@@ -121,6 +121,37 @@ describe("tabs store", () => {
   });
 });
 
+describe("first load and context", () => {
+  it("a pause before the project's context arrives starts no run; the context then starts it", async () => {
+    const { tabs, sessionFor } = await loadStore(view(stored, full("a1", "/a")));
+    tabs.setDebounce(0);
+    sessionFor("a1")!.setDraft("Retry failed checkout payments with backoff");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(api.analyze).not.toHaveBeenCalled();
+    tabs.setContext("/a", "/a|1|Focus.", "Focus.");
+    expect(api.analyze).toHaveBeenCalledTimes(1);
+    expect(api.analyze.mock.calls[0].slice(3, 5)).toEqual(["Focus.", "/a|1|Focus."]);
+  });
+
+  it("a failed first load is retried by the next load()", async () => {
+    vi.resetModules();
+    api.listWorkspace.mockRejectedValueOnce(new Error("backend not ready")).mockResolvedValue(view(stored, full("a1", "/a")));
+    const { tabs, workspaceState } = await import("./tabs");
+    await tabs.load();
+    expect(workspaceState().error).toBe("backend not ready");
+    expect(workspaceState().activeId).toBeNull();
+    await tabs.load();
+    expect(workspaceState().activeId).toBe("a1");
+  });
+
+  it("shows the first tab when the view lists tabs but none is active", async () => {
+    api.getTab.mockResolvedValue(full("a1", "/a"));
+    const { workspaceState } = await loadStore(view(stored, null));
+    expect(api.activateTab).toHaveBeenCalledWith("w-1", "a1");
+    expect(workspaceState().activeId).toBe("a1");
+  });
+});
+
 describe("legacy drafts", () => {
   const storage = (entries: Record<string, string>) => {
     const m = new Map(Object.entries(entries));

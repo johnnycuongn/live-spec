@@ -126,3 +126,38 @@ describe("project contexts", () => {
     expect(setContext).toHaveBeenLastCalledWith(null, "|0|Be brief.", "Be brief.");
   });
 });
+
+describe("load failures and ordering", () => {
+  it("instructions that fail to load push no context and are retried by ensure()", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockRejectedValueOnce("disk unreadable");
+    api.getInstructions.mockResolvedValue(instructionsView("Focus."));
+    projects.ensure("/p");
+    await settle();
+    expect(setContext).not.toHaveBeenCalled(); // empty instructions would re-run saved notes without "Focus."
+    expect(projectsState().instructions["/p"]).toBeUndefined();
+    expect(projectsState().instructionsError).toBe("Couldn't load instructions: disk unreadable");
+    projects.ensure("/p");
+    await settle();
+    expect(setContext).toHaveBeenCalledTimes(1);
+    expect(setContext).toHaveBeenCalledWith("/p", "/p|1|Focus.", "Focus.");
+  });
+
+  it("only the latest started summary load applies", async () => {
+    const { projects, projectsState } = await fresh();
+    const first = deferred<ProjectSummary>();
+    const second = deferred<ProjectSummary>();
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    api.projectSummary.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    void projects.refreshSummary("/p");
+    void projects.refreshSummary("/p");
+    await projects.reloadInstructions("/p");
+    second.resolve(summary("/p", 2));
+    await settle();
+    first.resolve(summary("/p", 1)); // lands late
+    await settle();
+    expect(projectsState().summaries["/p"].brief?.createdAt).toBe(2);
+    expect(setContext).toHaveBeenLastCalledWith("/p", "/p|2|", "");
+  });
+});

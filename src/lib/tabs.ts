@@ -28,6 +28,7 @@ const sessions = new Map<string, TabSession>();
 const contexts = new Map<string, { key: string | null; instructions: string }>();
 let debounce = 1200;
 let loaded = false;
+let wired = false;
 let switching = 0;
 let refreshing = 0;
 
@@ -60,7 +61,7 @@ const rootKey = (root: string | null) => root ?? "";
 function sessionOf(tab: Tab): TabSession {
   let s = sessions.get(tab.id);
   if (!s) {
-    s = new TabSession(tab, deps);
+    s = new TabSession(tab, deps, { awaitContext: true }); // no run until the window hands over its context
     sessions.set(tab.id, s);
     const c = contexts.get(rootKey(tab.root));
     if (c) s.setContext(c.key, c.instructions);
@@ -92,7 +93,15 @@ async function refresh(): Promise<void> {
   // Nothing shown yet, or the shown tab left this window: show what the backend says is active.
   const shown = state.activeId;
   if (shown === null || !view.tabs.some((t) => t.id === shown)) {
-    const next = view.active ? sessionOf(view.active) : null;
+    let target = view.active;
+    if (!target && view.tabs.length > 0) {
+      // Tabs but no active one (the backend lost track): show the first, as the single-pane window did.
+      const id = view.tabs[0].id;
+      await api.activateTab(state.windowId, id);
+      target = await api.getTab(id);
+      if (n !== refreshing) return;
+    }
+    const next = target ? sessionOf(target) : null;
     if ((next?.id ?? null) !== shown) show(next);
   }
 }
@@ -101,10 +110,13 @@ async function load(): Promise<void> {
   if (loaded) return; // StrictMode runs effects twice; there is one store per window
   loaded = true;
   set({ windowId: currentWindowId() });
-  // Closing the window doesn't unmount React, so flush when the page goes away.
-  if (typeof window !== "undefined") window.addEventListener("pagehide", () => void saver.flush());
-  // Any session change, in this window or another, refetches this window's list and the shared closed list.
-  void onWorkspaceChanged(() => void refresh().catch(() => {}));
+  if (!wired) {
+    wired = true;
+    // Closing the window doesn't unmount React, so flush when the page goes away.
+    if (typeof window !== "undefined") window.addEventListener("pagehide", () => void saver.flush());
+    // Any session change, in this window or another, refetches this window's list and the shared closed list.
+    void onWorkspaceChanged(() => void refresh().catch(() => {}));
+  }
   try {
     const first = await api.listWorkspace(state.windowId);
     if (first.fresh) {
@@ -115,6 +127,7 @@ async function load(): Promise<void> {
     }
     await refresh();
   } catch (e) {
+    loaded = false; // a failed first load is retried by the next load()
     set({ error: errorMessage(e) });
   }
 }

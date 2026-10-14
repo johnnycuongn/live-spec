@@ -8,7 +8,7 @@ import { useSyncExternalStore } from "react";
 import { activityLine } from "./brief";
 import { onBriefStatus } from "./events";
 import { api, errorMessage, type ProjectInstructions, type ProjectSummary, type Template } from "./ipc";
-import { EMPTY_INSTRUCTIONS, analysisContextKey } from "./instructions";
+import { analysisContextKey } from "./instructions";
 import { createSaver } from "./saver";
 import { tabs } from "./tabs";
 
@@ -43,6 +43,13 @@ let state: ProjectsState = {
 };
 const listeners = new Set<() => void>();
 const loading = new Set<string>();
+/** The newest started summary load per root: a slower, older load that lands late is dropped. */
+const summarySeq = new Map<string, number>();
+const nextSeq = (root: string) => {
+  const n = (summarySeq.get(root) ?? 0) + 1;
+  summarySeq.set(root, n);
+  return n;
+};
 let started = false;
 
 function set(patch: Partial<ProjectsState>) {
@@ -84,10 +91,13 @@ function pushContext(root: string | null) {
 }
 
 async function loadSummary(root: string): Promise<void> {
+  const n = nextSeq(root);
   try {
     const summary = await api.projectSummary(root);
+    if (n !== summarySeq.get(root)) return; // a newer load has started
     set({ summaries: { ...state.summaries, [root]: summary }, summaryErrors: without(state.summaryErrors, root) });
   } catch (e) {
+    if (n !== summarySeq.get(root)) return;
     // The tab still opens with its draft and notes, and analyses without code context.
     set({ summaryErrors: { ...state.summaryErrors, [root]: errorMessage(e) } });
   }
@@ -96,15 +106,15 @@ async function loadSummary(root: string): Promise<void> {
 
 async function loadInstructions(root: string | null): Promise<void> {
   await saver.flush(); // a pending edit must not lose to the read below
-  let project = EMPTY_INSTRUCTIONS;
   try {
     const view = await api.getInstructions(key(root));
-    project = view.project;
-    set({ templates: view.templates });
+    set({ templates: view.templates, instructions: { ...state.instructions, [key(root)]: view.project } });
   } catch (e) {
+    // Not loaded, not empty: empty instructions would re-run a tab's saved notes without the
+    // ones they were made with, and typing could overwrite the saved file. ensure() retries.
     set({ instructionsError: `Couldn't load instructions: ${errorMessage(e)}` });
+    return;
   }
-  set({ instructions: { ...state.instructions, [key(root)]: project } });
   pushContext(root);
 }
 
@@ -123,6 +133,7 @@ function ensure(root: string | null): void {
 /** "Open a project…": scans the folder (replacing any loaded index) and returns its root. */
 async function openFolder(path: string): Promise<string> {
   const summary = await api.openProject(path);
+  nextSeq(summary.root); // supersedes any summary load still in flight for this root
   set({ summaries: { ...state.summaries, [summary.root]: summary }, summaryErrors: without(state.summaryErrors, summary.root) });
   pushContext(summary.root);
   return summary.root;
