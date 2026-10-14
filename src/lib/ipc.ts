@@ -50,6 +50,13 @@ export interface Settings {
   agents: AgentSettings;
 }
 
+export type KeySource = "keychain" | "environment" | "envFile";
+
+/** Where the TypeSafe key comes from; the key itself never reaches the webview. */
+export interface JevStatus {
+  source: KeySource | null;
+}
+
 export type BriefStatus = "missing" | "fresh" | "stale";
 
 export interface StoredBrief {
@@ -100,6 +107,8 @@ export const api = {
   saveSettings: (settings: Settings) => invoke<void>("save_settings", { settings }),
   setApiKey: (key: string) => invoke<void>("set_api_key", { key }),
   hasApiKey: () => invoke<boolean>("has_api_key"),
+  setJevKey: (key: string) => invoke<void>("set_jev_key", { key }),
+  jevStatus: () => invoke<JevStatus>("jev_status"),
   checkClaude: (binaryPath: string | null) => invoke<string>("check_claude", { binaryPath }),
   warmUp: () => invoke<void>("warm_up"),
 
