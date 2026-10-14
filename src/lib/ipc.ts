@@ -13,8 +13,8 @@ export interface CheckResult {
 }
 
 export type UiEvent =
-  | { type: "text"; text: string }
-  | { type: "activity"; label: string }
+  | { type: "text"; text: string; lane: number }
+  | { type: "activity"; label: string; lane: number }
   | { type: "done"; text: string }
   | { type: "error"; message: string }
   | { type: "progress"; downloaded: number; total: number | null }
@@ -36,10 +36,17 @@ export interface JevSettings {
   model: string;
 }
 
+export interface AgentSettings {
+  maxAgents: number;
+  parallelBrief: boolean;
+  parallelNotes: boolean;
+}
+
 export interface Settings {
   provider: ProviderSettings;
   debounceMs: number;
   jev: JevSettings;
+  agents: AgentSettings;
 }
 
 export type BriefStatus = "missing" | "fresh" | "stale";

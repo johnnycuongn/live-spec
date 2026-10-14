@@ -2,11 +2,13 @@
 // Check events may arrive after `done`: the notes are complete before
 // "Checked in code" fills in.
 import type { CheckResult, UiEvent } from "./ipc";
+import { appendLane, joinLanes } from "./lanes";
 
 export type AnalysisStatus = "idle" | "thinking" | "done" | "error";
 
 export interface AnalysisState {
   status: AnalysisStatus;
+  lanes: string[];
   markdown: string;
   error: string | null;
   analyzedDraft: string;
@@ -17,6 +19,7 @@ export interface AnalysisState {
 
 export const initialAnalysis: AnalysisState = {
   status: "idle",
+  lanes: [],
   markdown: "",
   error: null,
   analyzedDraft: "",
@@ -35,8 +38,10 @@ export const startAnalysis = (prev: AnalysisState, draft: string): AnalysisState
 
 export function applyEvent(s: AnalysisState, ev: UiEvent): AnalysisState {
   switch (ev.type) {
-    case "text":
-      return { ...s, markdown: s.markdown + ev.text };
+    case "text": {
+      const lanes = appendLane(s.lanes, ev.lane, ev.text);
+      return { ...s, lanes, markdown: joinLanes(lanes) };
+    }
     case "done":
       return { ...s, status: "done", markdown: ev.text || s.markdown };
     case "error":
@@ -51,7 +56,7 @@ export function applyEvent(s: AnalysisState, ev: UiEvent): AnalysisState {
     case "notice":
       return { ...s, notice: ev.message };
     case "started":
-      return { ...s, markdown: "", checks: [], checking: null, notice: null, error: null };
+      return { ...s, lanes: [], markdown: "", checks: [], checking: null, notice: null, error: null };
     case "skipped": {
       // The skip aborted any fact-checks still running for these notes.
       const unfinished = s.checking !== null && s.checks.length < s.checking.count;

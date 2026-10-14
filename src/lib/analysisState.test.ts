@@ -8,7 +8,7 @@ const check: UiEvent = { type: "check", claim: "`x` is wrong", verdict: "confirm
 
 describe("applyEvent", () => {
   it("streams text, then completes", () => {
-    const s = run([{ type: "started" }, { type: "text", text: "## Intent\n" }, { type: "text", text: "- a" }, { type: "done", text: "" }]);
+    const s = run([{ type: "started" }, { type: "text", text: "## Intent\n", lane: 0 }, { type: "text", text: "- a", lane: 0 }, { type: "done", text: "" }]);
     expect(s.status).toBe("done");
     expect(s.markdown).toBe("## Intent\n- a");
   });
@@ -92,5 +92,22 @@ describe("checks interrupted by a skipped pause", () => {
   it("finished checks are left alone", () => {
     const s = applyEvent(run([{ type: "done", text: "" }, { type: "checking", count: 1, total: 1 }, check]), { type: "skipped" });
     expect(s.notice).toBeNull();
+  });
+});
+
+describe("parallel lanes", () => {
+  it("builds the notes from lanes in lane order", () => {
+    const s = run([
+      { type: "started" },
+      { type: "text", text: "## Directions\n- d", lane: 1 },
+      { type: "text", text: "## Intent\n- i", lane: 0 },
+    ]);
+    expect(s.markdown).toBe("## Intent\n- i\n## Directions\n- d");
+  });
+
+  it("started clears the lane buffers too", () => {
+    const s = run([{ type: "started" }, { type: "text", text: "## Intent\n- old", lane: 0 }, { type: "done", text: "## Intent\n- old" }]);
+    const next = applyEvent(startAnalysis(s, "v2"), { type: "started" });
+    expect(applyEvent(next, { type: "text", text: "## Faults\n- new", lane: 1 }).markdown).toBe("## Faults\n- new");
   });
 });
