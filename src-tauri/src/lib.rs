@@ -126,6 +126,8 @@ fn start_usage_tasks(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
+        // After a sleep, skip the missed ticks instead of firing them back to back (a double `usage-changed`).
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let (mut seconds, mut failing) = (0u32, false);
         loop {
             tick.tick().await;

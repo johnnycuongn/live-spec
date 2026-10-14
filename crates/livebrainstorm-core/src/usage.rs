@@ -132,14 +132,19 @@ impl UsageBucket {
         (self.hour, self.root.clone(), self.kind, self.model.clone())
     }
 
-    fn add(&mut self, u: &Usage, estimated: bool) {
+    /// `new_run` is false for the second and later records of one call (a CLI call that used two models):
+    /// they add tokens and cost but are not another run. `new_unpriced` says whether this record is the
+    /// first unpriced one of its call.
+    fn add(&mut self, u: &Usage, estimated: bool, new_run: bool, new_unpriced: bool) {
         // Counts come from a CLI or API payload: a bogus one saturates, never panics or wraps.
         self.input = self.input.saturating_add(u.input);
         self.cache_write = self.cache_write.saturating_add(u.cache_write);
         self.cache_read = self.cache_read.saturating_add(u.cache_read);
         self.output = self.output.saturating_add(u.output);
-        self.runs = self.runs.saturating_add(1);
-        if estimated {
+        if new_run {
+            self.runs = self.runs.saturating_add(1);
+        }
+        if estimated && new_run {
             self.estimated_runs = self.estimated_runs.saturating_add(1);
         }
         match u.cost_usd {
@@ -150,7 +155,8 @@ impl UsageBucket {
                     self.estimated_cost_usd += cost;
                 }
             }
-            _ => self.unpriced_runs = self.unpriced_runs.saturating_add(1),
+            _ if new_unpriced => self.unpriced_runs = self.unpriced_runs.saturating_add(1),
+            _ => {}
         }
     }
 
@@ -265,10 +271,21 @@ impl UsageLedger {
     /// Adds one call to its hour's bucket. Synchronous and never awaits, so
     /// `Meter::drop` can call it from a task that is being aborted.
     pub fn record(&self, tag: &UsageTag, usage: &Usage, estimated: bool) {
-        self.record_at(now_secs(), tag, usage, estimated)
+        self.record_part(tag, usage, estimated, true, true)
     }
 
+    /// One record of a call. A call that reports several models records each; `Meter` passes
+    /// `new_run` / `new_unpriced` so the call still counts as one run (and one unpriced run) in total.
+    fn record_part(&self, tag: &UsageTag, usage: &Usage, estimated: bool, new_run: bool, new_unpriced: bool) {
+        self.record_part_at(now_secs(), tag, usage, estimated, new_run, new_unpriced)
+    }
+
+    #[cfg(test)]
     fn record_at(&self, now: u64, tag: &UsageTag, usage: &Usage, estimated: bool) {
+        self.record_part_at(now, tag, usage, estimated, true, true)
+    }
+
+    fn record_part_at(&self, now: u64, tag: &UsageTag, usage: &Usage, estimated: bool, new_run: bool, new_unpriced: bool) {
         {
             let mut inner = lock(&self.inner);
             let hour = now / 3600;
@@ -276,7 +293,7 @@ impl UsageLedger {
                 .buckets
                 .entry((hour, tag.root.clone(), tag.kind, usage.model.clone()))
                 .or_insert_with(|| UsageBucket::empty(hour, tag, &usage.model))
-                .add(usage, estimated);
+                .add(usage, estimated, new_run, new_unpriced);
             inner.dirty = true;
         }
         if let Some(on_record) = lock(&self.on_record).as_ref() {
@@ -331,13 +348,15 @@ pub struct Meter {
     received_chars: usize,
     /// A `Chunk::Usage` arrived and was recorded.
     reported: bool,
+    /// A record of this call already counted as unpriced.
+    unpriced_counted: bool,
     /// `finish` ran, so `Drop` adds nothing.
     settled: bool,
 }
 
 impl Meter {
     pub fn new(ledger: Arc<UsageLedger>, tag: UsageTag, model: String, sent_chars: usize) -> Self {
-        Self { ledger, tag, model, sent_chars, received_chars: 0, reported: false, settled: false }
+        Self { ledger, tag, model, sent_chars, received_chars: 0, reported: false, unpriced_counted: false, settled: false }
     }
 
     pub fn observe(&mut self, chunk: &Chunk) {
@@ -345,7 +364,11 @@ impl Meter {
             Chunk::Text(t) => self.received_chars += t.chars().count(),
             Chunk::Activity(_) => {}
             Chunk::Usage(u) => {
-                self.ledger.record(&self.tag, u, false);
+                // One call is one run, however many models it reports: only the first record counts it.
+                let unpriced = !u.cost_usd.is_some_and(f64::is_finite);
+                let new_unpriced = unpriced && !self.unpriced_counted;
+                self.ledger.record_part(&self.tag, u, false, !self.reported, new_unpriced);
+                self.unpriced_counted |= unpriced;
                 self.reported = true;
             }
         }
@@ -737,6 +760,44 @@ mod tests {
         let b = total(&l);
         assert_eq!((b.runs, b.estimated_runs, b.input, b.cache_write), (3, 0, 6, 3 * 2198));
         assert!((b.cost_usd - 3.0 * 0.00046765).abs() < 1e-15);
+    }
+
+    #[test]
+    fn a_call_that_used_two_models_is_one_run_with_both_models_tokens() {
+        let (_dir, l) = shared();
+        let mut m = Meter::new(l.clone(), tag("/a", UsageKind::Brief), "sonnet".into(), 4000);
+        m.observe(&Chunk::Usage(used("claude-sonnet-5-5", 100, 10, Some(0.001))));
+        m.observe(&Chunk::Usage(used("claude-haiku-5-5", 40, 4, Some(0.0002))));
+        m.finish(true);
+        let report = l.report(0);
+        assert_eq!(report.len(), 2, "one bucket per model");
+        let by = |model: &str| report.iter().find(|b| b.model == model).unwrap().clone();
+        let (sonnet, haiku) = (by("claude-sonnet-5-5"), by("claude-haiku-5-5"));
+        assert_eq!((sonnet.input, sonnet.output, sonnet.runs), (100, 10, 1));
+        assert_eq!((haiku.input, haiku.output, haiku.runs), (40, 4, 0), "tokens and cost, but not a second run");
+        assert!((haiku.cost_usd - 0.0002).abs() < 1e-15);
+        assert_eq!(total(&l).runs, 1);
+    }
+
+    #[test]
+    fn a_second_unpriced_model_marks_the_call_unpriced_once() {
+        let (_dir, l) = shared();
+        let mut m = Meter::new(l.clone(), tag("/a", UsageKind::Brief), "sonnet".into(), 4000);
+        m.observe(&Chunk::Usage(used("claude-sonnet-5-5", 100, 10, Some(0.001))));
+        m.observe(&Chunk::Usage(used("claude-sonnet-9", 40, 4, None)));
+        m.observe(&Chunk::Usage(used("claude-sonnet-10", 8, 1, None)));
+        m.finish(true);
+        let b = total(&l);
+        assert_eq!((b.runs, b.unpriced_runs, b.estimated_runs, b.input), (1, 1, 0, 148));
+        let unpriced: u64 = l.report(0).iter().map(|b| b.unpriced_runs).sum();
+        assert_eq!(unpriced, 1, "two unpriced records, one unpriced call");
+
+        let (_dir, l) = shared();
+        let mut m = Meter::new(l.clone(), tag("/a", UsageKind::Brief), "sonnet".into(), 4000);
+        m.observe(&Chunk::Usage(used("claude-sonnet-9", 40, 4, None)));
+        m.observe(&Chunk::Usage(used("claude-sonnet-10", 8, 1, None)));
+        m.finish(true);
+        assert_eq!((total(&l).runs, total(&l).unpriced_runs), (1, 1), "unpriced first: not counted again");
     }
 
     #[test]
