@@ -232,6 +232,7 @@ export const api = {
   closeTab: (tabId: string) => invoke<void>("close_tab", { tabId }),
   reopenTab: (tabId: string, window: string) => invoke<void>("reopen_tab", { tabId, window }),
   deleteTab: (tabId: string) => invoke<void>("delete_tab", { tabId }),
+  openWindow: () => invoke<string>("open_window"),
   importLegacyDrafts: (window: string, drafts: LegacyDraft[], activeRoot: string | null) =>
     invoke<void>("import_legacy_drafts", { window, drafts, activeRoot }),
 

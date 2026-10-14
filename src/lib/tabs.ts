@@ -239,7 +239,8 @@ export const tabs = {
   setDebounce: (ms: number) => {
     debounce = ms;
   },
-  // Phase 3 (Task 4) adds `flush()` here, returning `saver.flush()`; this phase flushes inside the store.
+  /** Saves the pending draft edit now: before closing this window or moving a tab out of it. */
+  flush: () => saver.flush(),
 };
 
 export function sessionFor(tabId: string): TabSession | undefined {

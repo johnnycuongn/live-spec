@@ -8,6 +8,7 @@ import { IDLE_BRIEF, projects, useProjects } from "./lib/projects";
 import { projectName, readCollapsed, rowTitle, windowTitle, writeCollapsed } from "./lib/tabList";
 import { sessionFor, tabs, useWorkspace } from "./lib/tabs";
 import { useTabSession } from "./lib/useTabSession";
+import { useWindowTitle } from "./lib/windowTitle";
 import { currentWindowId } from "./lib/windowId";
 import { TopBar } from "./components/TopBar";
 import { Sidebar } from "./components/Sidebar";
@@ -60,9 +61,7 @@ export default function App() {
     setOpenError(null);
   }, [ws.activeId]);
 
-  useEffect(() => {
-    document.title = windowTitle(title);
-  }, [title]);
+  useWindowTitle(windowTitle(title));
 
   // Esc closes either drawer. The settings <dialog> handles its own Esc.
   useEffect(() => {

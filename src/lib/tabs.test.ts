@@ -96,6 +96,14 @@ describe("tabs store", () => {
     expect(api.saveDraft.mock.invocationCallOrder[0]).toBeLessThan(api.getTab.mock.invocationCallOrder[0]);
   });
 
+  it("flush saves the pending draft now", async () => {
+    const { tabs, sessionFor } = await loadStore(view(stored, full("a1", "/a")));
+    sessionFor("a1")!.setDraft("typed in a1");
+    expect(api.saveDraft).not.toHaveBeenCalled();
+    await tabs.flush();
+    expect(api.saveDraft).toHaveBeenCalledWith("a1", "typed in a1");
+  });
+
   it("next() follows the sidebar's order", async () => {
     const { tabs, workspaceState } = await loadStore(view(stored, full("a2", "/a")));
     api.getTab.mockResolvedValue(full("b1", "/b"));
