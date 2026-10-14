@@ -12,15 +12,79 @@ pub enum Tier {
     Deep,
 }
 
+/// How hard the model thinks: `claude --effort`, or `output_config.effort` in
+/// the Messages API. `None` in settings means the model's own default.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Effort {
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl Effort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+/// How the Claude Code CLI authenticates.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ClaudeAuth {
+    /// Claude Code's own login (the subscription).
+    #[default]
+    Login,
+    /// The Anthropic API key from the keychain, given to `claude` as ANTHROPIC_API_KEY.
+    ApiKey,
+}
+
+/// Reads a field that must never reset the whole file: `Settings::load` falls
+/// back to defaults on any error, so an unknown value (a typo, or a level a
+/// newer version wrote) becomes the field's default instead.
+fn lenient<'de, D, T>(d: D) -> std::result::Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned + Default,
+{
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value(value).unwrap_or_default())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ProviderSettings {
-    /// Your Claude subscription, through the installed Claude Code CLI.
+    /// Your installed Claude Code CLI, with its login or your API key.
     #[serde(rename_all = "camelCase")]
-    ClaudeCli { binary_path: Option<String>, fast_model: String, deep_model: String },
+    ClaudeCli {
+        binary_path: Option<String>,
+        fast_model: String,
+        deep_model: String,
+        #[serde(default, deserialize_with = "lenient")]
+        fast_effort: Option<Effort>,
+        #[serde(default, deserialize_with = "lenient")]
+        deep_effort: Option<Effort>,
+        #[serde(default, deserialize_with = "lenient")]
+        auth: ClaudeAuth,
+    },
     /// Anthropic API key (stored in the OS keychain, never in this file).
     #[serde(rename_all = "camelCase")]
-    AnthropicApi { fast_model: String, deep_model: String },
+    AnthropicApi {
+        fast_model: String,
+        deep_model: String,
+        #[serde(default, deserialize_with = "lenient")]
+        fast_effort: Option<Effort>,
+        #[serde(default, deserialize_with = "lenient")]
+        deep_effort: Option<Effort>,
+    },
     /// A downloaded GGUF model served by the managed llama.cpp runtime.
     #[serde(rename_all = "camelCase")]
     Local { model_id: String },
@@ -29,6 +93,7 @@ pub enum ProviderSettings {
 impl ProviderSettings {
     pub fn label(&self) -> String {
         match self {
+            Self::ClaudeCli { fast_model, auth: ClaudeAuth::ApiKey, .. } => format!("Claude Code (API key, {fast_model})"),
             Self::ClaudeCli { fast_model, .. } => format!("Claude Code ({fast_model})"),
             Self::AnthropicApi { fast_model, .. } => format!("Anthropic API ({fast_model})"),
             Self::Local { model_id } => format!("Local ({model_id})"),
@@ -54,6 +119,9 @@ impl Default for Settings {
                 // Claude Code accepts aliases, which track the latest models.
                 fast_model: "haiku".into(),
                 deep_model: "sonnet".into(),
+                fast_effort: None,
+                deep_effort: None,
+                auth: ClaudeAuth::Login,
             },
             debounce_ms: 1200,
             jev: JevSettings::default(),
@@ -259,5 +327,80 @@ mod tests {
         s.agents = AgentSettings { parallel_brief: true, ..AgentSettings::default() };
         s.provider = ProviderSettings::Local { model_id: "qwen3-4b-instruct".into() };
         assert_eq!(s.effective_brief_agents(), 1);
+    }
+
+    #[test]
+    fn files_from_before_effort_get_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"provider":{"kind":"claudeCli","binaryPath":null,"fastModel":"haiku","deepModel":"sonnet"},"debounceMs":900}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.debounce_ms, 900);
+        assert_eq!(
+            s.provider,
+            ProviderSettings::ClaudeCli {
+                binary_path: None,
+                fast_model: "haiku".into(),
+                deep_model: "sonnet".into(),
+                fast_effort: None,
+                deep_effort: None,
+                auth: ClaudeAuth::Login,
+            }
+        );
+        std::fs::write(&path, r#"{"provider":{"kind":"anthropicApi","fastModel":"a","deepModel":"b"}}"#).unwrap();
+        assert_eq!(
+            Settings::load(&path).provider,
+            ProviderSettings::AnthropicApi { fast_model: "a".into(), deep_model: "b".into(), fast_effort: None, deep_effort: None }
+        );
+    }
+
+    #[test]
+    fn effort_and_auth_serialize_as_the_ui_expects() {
+        let p = ProviderSettings::ClaudeCli {
+            binary_path: None,
+            fast_model: "haiku".into(),
+            deep_model: "opus".into(),
+            fast_effort: Some(Effort::Low),
+            deep_effort: Some(Effort::Xhigh),
+            auth: ClaudeAuth::ApiKey,
+        };
+        let json = serde_json::to_value(&p).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({"kind": "claudeCli", "binaryPath": null, "fastModel": "haiku", "deepModel": "opus",
+                               "fastEffort": "low", "deepEffort": "xhigh", "auth": "apiKey"})
+        );
+        assert_eq!(serde_json::from_value::<ProviderSettings>(json).unwrap(), p);
+        for e in [Effort::Low, Effort::Medium, Effort::High, Effort::Xhigh, Effort::Max] {
+            assert_eq!(serde_json::to_value(e).unwrap(), e.as_str(), "the CLI flag and the JSON agree");
+        }
+    }
+
+    #[test]
+    fn an_unknown_effort_or_auth_never_resets_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(
+            &path,
+            r#"{"provider":{"kind":"claudeCli","binaryPath":null,"fastModel":"opus","deepModel":"sonnet",
+                "fastEffort":"extreme","deepEffort":"max","auth":"sso"},"debounceMs":900}"#,
+        )
+        .unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.debounce_ms, 900, "the rest of the file still loads");
+        let ProviderSettings::ClaudeCli { fast_model, fast_effort, deep_effort, auth, .. } = s.provider else {
+            panic!("kept the provider")
+        };
+        assert_eq!((fast_model.as_str(), fast_effort, deep_effort, auth), ("opus", None, Some(Effort::Max), ClaudeAuth::Login));
+    }
+
+    #[test]
+    fn the_label_says_when_claude_code_uses_an_api_key() {
+        let mut s = Settings::default();
+        assert_eq!(s.provider.label(), "Claude Code (haiku)");
+        if let ProviderSettings::ClaudeCli { auth, .. } = &mut s.provider {
+            *auth = ClaudeAuth::ApiKey;
+        }
+        assert_eq!(s.provider.label(), "Claude Code (API key, haiku)");
     }
 }

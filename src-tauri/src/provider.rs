@@ -18,12 +18,12 @@ pub async fn resolve(app: &AppHandle, tier: Tier) -> Result<Provider> {
     let pick = |fast: String, deep: String| if tier == Tier::Fast { fast } else { deep };
 
     match state.settings().provider {
-        ProviderSettings::ClaudeCli { binary_path, fast_model, deep_model } => {
+        ProviderSettings::ClaudeCli { binary_path, fast_model, deep_model, .. } => {
             let mut cli = claude_cli(binary_path).await?;
             cli.model = pick(fast_model, deep_model);
             Ok(Provider::ClaudeCli(cli))
         }
-        ProviderSettings::AnthropicApi { fast_model, deep_model } => {
+        ProviderSettings::AnthropicApi { fast_model, deep_model, .. } => {
             let api_key = secrets::api_key()?
                 .ok_or_else(|| Error::Precondition("Add your Anthropic API key in Settings.".into()))?;
             Ok(Provider::AnthropicApi(AnthropicApi {
