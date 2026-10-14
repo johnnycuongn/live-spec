@@ -31,7 +31,7 @@ export default function App() {
   // single source of truth for the brief and whether it's stale.
   const brief = project?.brief ?? null;
   const briefStatus = project?.briefStatus ?? null;
-  const analysis = useLiveAnalysis(draft, settings?.debounceMs ?? 1200, `${project?.root ?? ""}|${brief?.createdAt ?? 0}`);
+  const analysis = useLiveAnalysis(draft, settings?.debounceMs ?? 1200, `${project?.root ?? ""}|${brief?.createdAt ?? 0}`, "");
 
   const loadProject = useCallback(async (path: string) => {
     setOpening(true);

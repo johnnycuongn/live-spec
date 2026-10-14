@@ -22,7 +22,7 @@ const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
  * skips (Jev gate) and the notes stay. Old responses are dropped by request
  * id; the backend also aborts the superseded run, checks included.
  */
-export function useLiveAnalysis(draft: string, debounceMs: number, contextKey: string) {
+export function useLiveAnalysis(draft: string, debounceMs: number, contextKey: string, instructions: string) {
   const [state, setState] = useState<AnalysisState>(initialAnalysis);
   const requestId = useRef(0);
   const lastSent = useRef("");
@@ -30,6 +30,9 @@ export function useLiveAnalysis(draft: string, debounceMs: number, contextKey: s
   // Read at call time, so each request remembers the context it ran in.
   const context = useRef(contextKey);
   context.current = contextKey;
+  // Also read at call time: each request sends the instructions current when it starts.
+  const instructionsRef = useRef(instructions);
+  instructionsRef.current = instructions;
 
   const run = useCallback((text: string, rerun = false) => {
     const id = ++requestId.current;
@@ -39,7 +42,7 @@ export function useLiveAnalysis(draft: string, debounceMs: number, contextKey: s
     const mine = () => id === requestId.current;
 
     api
-      .analyze(text, previousDraftFor(lastAnalyzed.current, rerun, ctx), (ev) => {
+      .analyze(text, previousDraftFor(lastAnalyzed.current, rerun, ctx), instructionsRef.current, (ev) => {
         if (!mine()) return;
         lastAnalyzed.current = lastAnalyzedAfter(lastAnalyzed.current, ev, text, ctx);
         setState((s) => applyEvent(s, ev));

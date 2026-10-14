@@ -71,6 +71,25 @@ export interface JevStatus {
   source: KeySource | null;
 }
 
+/** Mirrors `instructions::Template`. Starters have fixed ids; new ones use crypto.randomUUID(). */
+export interface Template {
+  id: string;
+  name: string;
+  text: string;
+}
+
+/** One project's instructions (`instructions::ProjectInstructions`). */
+export interface ProjectInstructions {
+  default: string;
+  current: string;
+  templateId: string | null;
+}
+
+export interface InstructionsView {
+  templates: Template[];
+  project: ProjectInstructions;
+}
+
 export type BriefStatus = "missing" | "fresh" | "stale";
 
 export interface StoredBrief {
@@ -127,10 +146,15 @@ export const api = {
   warmUp: () => invoke<void>("warm_up"),
 
   openProject: (path: string) => invoke<ProjectSummary>("open_project", { path }),
+  getInstructions: (root: string) => invoke<InstructionsView>("get_instructions", { root }),
+  saveProjectInstructions: (root: string, instructions: ProjectInstructions) =>
+    invoke<void>("save_project_instructions", { root, instructions }),
+  saveTemplates: (templates: Template[]) => invoke<void>("save_templates", { templates }),
+  restoreStarterTemplates: () => invoke<Template[]>("restore_starter_templates"),
   buildBrief: (onEvent: (e: UiEvent) => void) => stream("build_brief", {}, onEvent),
 
-  analyze: (draft: string, previousDraft: string | null, onEvent: (e: UiEvent) => void) =>
-    stream("analyze", { draft, previousDraft }, onEvent),
+  analyze: (draft: string, previousDraft: string | null, instructions: string, onEvent: (e: UiEvent) => void) =>
+    stream("analyze", { draft, previousDraft, instructions }, onEvent),
   cancelAnalysis: () => invoke<void>("cancel_analysis"),
 
   localStatus: () => invoke<LocalStatus>("local_inventory"),
