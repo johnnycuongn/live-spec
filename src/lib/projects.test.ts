@@ -1,0 +1,128 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { InstructionsView, ProjectSummary } from "./ipc";
+
+const api = vi.hoisted(() => ({
+  projectSummary: vi.fn(),
+  getInstructions: vi.fn(),
+  saveProjectInstructions: vi.fn(),
+  saveTemplates: vi.fn(),
+  restoreStarterTemplates: vi.fn(),
+  openProject: vi.fn(),
+  buildBrief: vi.fn(),
+}));
+const setContext = vi.hoisted(() => vi.fn());
+vi.mock("./ipc", () => ({
+  api,
+  errorMessage: (e: unknown) => (typeof e === "string" ? e : e instanceof Error ? e.message : String(e)),
+}));
+vi.mock("./tabs", () => ({ tabs: { setContext } }));
+vi.mock("./events", () => ({ onBriefStatus: vi.fn() }));
+
+const summary = (root: string, createdAt: number | null): ProjectSummary => ({
+  name: "p",
+  root,
+  indexedFiles: 1,
+  totalFiles: 1,
+  briefStatus: createdAt ? "fresh" : "missing",
+  brief: createdAt ? { root, fingerprint: "f", text: "brief", createdAt, source: "test" } : null,
+});
+const instructionsView = (current: string): InstructionsView => ({ templates: [], project: { default: "", current, templateId: null } });
+
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+}
+
+const settle = async () => {
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+};
+
+async function fresh() {
+  vi.resetModules();
+  return import("./projects");
+}
+
+beforeEach(() => {
+  vi.resetAllMocks();
+  api.saveProjectInstructions.mockResolvedValue(undefined);
+});
+
+describe("project contexts", () => {
+  it("a project's context reaches its tabs only after both its summary and its instructions load", async () => {
+    const { projects } = await fresh();
+    const s = deferred<ProjectSummary>();
+    const i = deferred<InstructionsView>();
+    api.projectSummary.mockReturnValue(s.promise);
+    api.getInstructions.mockReturnValue(i.promise);
+    projects.ensure("/p");
+    i.resolve(instructionsView("Focus."));
+    await settle();
+    expect(setContext).not.toHaveBeenCalled(); // "/p|0|Focus." would not match the saved notes' context
+    s.resolve(summary("/p", 7));
+    await settle();
+    expect(setContext).toHaveBeenCalledTimes(1);
+    expect(setContext).toHaveBeenCalledWith("/p", "/p|7|Focus.", "Focus.");
+  });
+
+  it("tabs with no project need only the instructions", async () => {
+    const { projects } = await fresh();
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure(null);
+    await settle();
+    expect(api.projectSummary).not.toHaveBeenCalled();
+    expect(setContext).toHaveBeenCalledWith(null, "|0|", "");
+  });
+
+  it("a project that can't be read hands its tabs only the instructions, and is retried when shown again", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockRejectedValueOnce("That folder no longer exists. Open it again from its new place.");
+    api.projectSummary.mockResolvedValue(summary("/gone", 3));
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure("/gone");
+    await settle();
+    expect(projectsState().summaryErrors["/gone"]).toBe("That folder no longer exists. Open it again from its new place.");
+    expect(setContext).toHaveBeenLastCalledWith("/gone", null, ""); // keep the saved notes' context: no re-run
+    projects.ensure("/gone");
+    await settle();
+    expect(projectsState().summaryErrors["/gone"]).toBeUndefined();
+    expect(setContext).toHaveBeenLastCalledWith("/gone", "/gone|3|", "");
+  });
+
+  it("a finished brief build refreshes the summary, so the project's tabs get the new context", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValueOnce(summary("/p", 1)).mockResolvedValueOnce(summary("/p", 2));
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure("/p");
+    await settle();
+    projects.briefStatus({ root: "/p", state: "building", message: null });
+    expect(projectsState().briefs["/p"].building).toBe(true);
+    projects.briefStatus({ root: "/p", state: "done", message: null });
+    await settle();
+    expect(projectsState().briefs["/p"].building).toBe(false);
+    expect(setContext).toHaveBeenLastCalledWith("/p", "/p|2|", "");
+  });
+
+  it("editing instructions updates the project's context and saves under that project", async () => {
+    const { projects } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure("/p");
+    await settle();
+    const next = { default: "", current: "Focus.", templateId: null };
+    projects.changeInstructions("/p", next);
+    expect(setContext).toHaveBeenLastCalledWith("/p", "/p|1|Focus.", "Focus.");
+    await projects.flush();
+    expect(api.saveProjectInstructions).toHaveBeenCalledWith("/p", next);
+  });
+
+  it('reloading under "" (how events name no project) updates the tabs with no project', async () => {
+    const { projects } = await fresh();
+    api.getInstructions.mockResolvedValueOnce(instructionsView("")).mockResolvedValueOnce(instructionsView("Be brief."));
+    projects.ensure(null);
+    await settle();
+    await projects.reloadInstructions("");
+    expect(api.getInstructions).toHaveBeenLastCalledWith("");
+    expect(setContext).toHaveBeenLastCalledWith(null, "|0|Be brief.", "Be brief.");
+  });
+});
