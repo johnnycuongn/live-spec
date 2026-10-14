@@ -6,30 +6,47 @@ use livebrainstorm_core::jev::Jev;
 use livebrainstorm_core::llm::{AnthropicApi, ClaudeCli, OpenAiCompat, Provider, Secret};
 use livebrainstorm_core::local::catalog;
 use livebrainstorm_core::local::LocalServer;
-use livebrainstorm_core::settings::{ProviderSettings, Tier};
+use livebrainstorm_core::settings::{ClaudeAuth, ProviderSettings, Tier};
 use livebrainstorm_core::{shell_env, Error, Result};
 use tauri::{AppHandle, Manager};
 
 use crate::secrets;
 use crate::state::AppState;
 
+/// The fast or the deep half of a per-tier setting.
+fn pick<T>(tier: Tier, fast: T, deep: T) -> T {
+    if tier == Tier::Fast {
+        fast
+    } else {
+        deep
+    }
+}
+
 pub async fn resolve(app: &AppHandle, tier: Tier) -> Result<Provider> {
     let state = app.state::<AppState>();
-    let pick = |fast: String, deep: String| if tier == Tier::Fast { fast } else { deep };
 
     match state.settings().provider {
-        ProviderSettings::ClaudeCli { binary_path, fast_model, deep_model, .. } => {
+        ProviderSettings::ClaudeCli { binary_path, fast_model, deep_model, fast_effort, deep_effort, auth } => {
             let mut cli = claude_cli(binary_path).await?;
-            cli.model = pick(fast_model, deep_model);
+            cli.model = pick(tier, fast_model, deep_model);
+            cli.effort = pick(tier, fast_effort, deep_effort);
+            if auth == ClaudeAuth::ApiKey {
+                let key = secrets::api_key()?.ok_or_else(|| {
+                    Error::Precondition(
+                        "Add your Anthropic API key in Settings, or switch Claude Code back to your login.".into(),
+                    )
+                })?;
+                cli.api_key = Some(Secret::new(key));
+            }
             Ok(Provider::ClaudeCli(cli))
         }
-        ProviderSettings::AnthropicApi { fast_model, deep_model, .. } => {
+        ProviderSettings::AnthropicApi { fast_model, deep_model, fast_effort, deep_effort } => {
             let api_key = secrets::api_key()?
                 .ok_or_else(|| Error::Precondition("Add your Anthropic API key in Settings.".into()))?;
             Ok(Provider::AnthropicApi(AnthropicApi {
                 api_key: Secret::new(api_key),
-                model: pick(fast_model, deep_model),
-                effort: None,
+                model: pick(tier, fast_model, deep_model),
+                effort: pick(tier, fast_effort, deep_effort),
                 http: state.http.clone(),
             }))
         }
