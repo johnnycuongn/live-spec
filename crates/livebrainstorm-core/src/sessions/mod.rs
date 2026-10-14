@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::jev::check::{CheckEvent, CheckResult};
 
 pub use ids::{tab_id, valid_id, window_id};
-pub use store::SessionStore;
+pub use store::{Recorder, SessionStore};
 
 /// Analyses kept per tab, newest first.
 pub const HISTORY_LEN: usize = 5;

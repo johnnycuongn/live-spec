@@ -10,7 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use super::{first_line, tab_id, valid_id, Snapshot, Tab, TabSummary, WindowView, Workspace, HISTORY_LEN};
+use super::{first_line, tab_id, valid_id, LegacyDraft, Snapshot, Tab, TabSummary, WindowView, Workspace, HISTORY_LEN};
+use crate::jev::check::CheckEvent;
 use crate::store::{load_json, write_atomic, Loaded};
 use crate::{Error, Result};
 
@@ -210,6 +211,171 @@ impl SessionStore {
         }
     }
 
+    /// Closes a tab: its window drops it (the next tab becomes active) and its
+    /// file gets `closed_at`, so it shows under Recently closed. Returns the
+    /// window it was in, or `None` if it was already closed.
+    pub fn close_tab(&self, id: &str) -> Result<Option<String>> {
+        validate(id)?;
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let mut tab = self.existing_tab(inner, id)?;
+        let mut ws = self.read_ws(inner)?;
+        let Some(window) = ws.window_of(id).map(str::to_owned) else { return Ok(None) };
+        if let Some(entry) = ws.window_mut(&window) {
+            entry.remove_tab(id);
+        }
+        // The workspace first: if the app stops before the tab file is written,
+        // the tab is still closed (no window lists it) and sorts by its last edit.
+        self.put_ws(inner, ws)?;
+        tab.closed_at = Some(self.now_secs());
+        self.put_tab(inner, tab)?;
+        Ok(Some(window))
+    }
+
+    /// Closes every tab of `window` (they show under Recently closed) and
+    /// removes the window. Returns the ids of the tabs it closed.
+    pub fn close_window(&self, window: &str) -> Result<Vec<String>> {
+        validate(window)?;
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let mut ws = self.read_ws(inner)?;
+        let pos = ws.windows.iter().position(|w| w.id == window).ok_or_else(window_closed)?;
+        let entry = ws.windows.remove(pos);
+        self.put_ws(inner, ws)?;
+        let now = self.now_secs();
+        for id in &entry.tabs {
+            let Some(mut tab) = self.read_tab_logged(inner, id) else { continue };
+            tab.closed_at = Some(now);
+            if let Err(e) = self.put_tab(inner, tab) {
+                // Still closed (no window lists it); it sorts by its last edit.
+                eprintln!("LiveBrainstorm: couldn't mark tab {id} closed: {e}");
+            }
+        }
+        Ok(entry.tabs)
+    }
+
+    /// Puts a closed tab back, at the end of `window`, as its active tab.
+    pub fn reopen_tab(&self, id: &str, window: &str) -> Result<()> {
+        validate(id)?;
+        validate(window)?;
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let mut ws = self.read_ws(inner)?;
+        if ws.window_of(id).is_some() {
+            return Err(open_elsewhere());
+        }
+        if ws.window_mut(window).is_none() {
+            return Err(window_closed());
+        }
+        let mut tab = self.existing_tab(inner, id)?;
+        tab.closed_at = None;
+        self.put_tab(inner, tab)?;
+        let entry = ws.window_mut(window).ok_or_else(window_closed)?;
+        entry.tabs.push(id.to_owned());
+        entry.active = Some(id.to_owned());
+        self.put_ws(inner, ws)
+    }
+
+    /// Deletes a closed tab's file for good.
+    pub fn delete_tab(&self, id: &str) -> Result<()> {
+        validate(id)?;
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        if self.read_ws(inner)?.window_of(id).is_some() {
+            return Err(Error::Precondition("Close this tab before deleting it.".into()));
+        }
+        match std::fs::remove_file(self.tab_path(id)) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        inner.tabs.remove(id);
+        Ok(())
+    }
+
+    /// Moves an open tab to the end of window `to`, or of a new window
+    /// (`None`), which then shows it. Its old window shows another tab.
+    /// Returns `(from, to)`. The shell cancels the tab's run and makes it
+    /// active in `to`.
+    pub fn move_tab(&self, id: &str, to: Option<&str>) -> Result<(String, String)> {
+        validate(id)?;
+        if let Some(window) = to {
+            validate(window)?;
+        }
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let mut ws = self.read_ws(inner)?;
+        let from = ws.window_of(id).map(str::to_owned).ok_or_else(tab_closed)?;
+        let to = match to {
+            Some(window) if window == from => return Ok((from.clone(), from)),
+            Some(window) if ws.windows.iter().any(|w| w.id == window) => window.to_owned(),
+            Some(_) => return Err(window_closed()),
+            None => ws.push_window(),
+        };
+        if let Some(source) = ws.window_mut(&from) {
+            source.remove_tab(id);
+        }
+        let target = ws.window_mut(&to).ok_or_else(window_closed)?;
+        target.tabs.push(id.to_owned());
+        if target.active.is_none() {
+            target.active = Some(id.to_owned());
+        }
+        self.put_ws(inner, ws)?;
+        Ok((from, to))
+    }
+
+    /// The first launch after the upgrade: every non-empty draft the old build
+    /// kept becomes a tab at the end of `window`, and `active_root`'s tab (else
+    /// the first one imported) is active. Runs once: while the workspace is
+    /// `fresh`, which it then stops being. Later calls do nothing.
+    pub fn import_legacy(&self, window: &str, drafts: Vec<LegacyDraft>, active_root: Option<String>) -> Result<()> {
+        validate(window)?;
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let mut ws = self.read_ws(inner)?;
+        if !inner.fresh {
+            return Ok(());
+        }
+        if ws.window_mut(window).is_none() {
+            return Err(window_closed());
+        }
+        let mut imported = Vec::new();
+        let mut active = None;
+        for legacy in drafts {
+            if legacy.draft.trim().is_empty() {
+                continue;
+            }
+            let tab = self.new_tab(inner, legacy.root, legacy.draft);
+            if active.is_none() && tab.root == active_root {
+                active = Some(tab.id.clone());
+            }
+            imported.push(tab.id.clone());
+            self.put_tab(inner, tab)?;
+        }
+        let entry = ws.window_mut(window).ok_or_else(window_closed)?;
+        if let Some(first) = imported.first() {
+            entry.active = Some(active.unwrap_or_else(|| first.clone()));
+        }
+        entry.tabs.extend(imported);
+        self.put_ws(inner, ws)?;
+        inner.fresh = false;
+        Ok(())
+    }
+
+    /// The projects of every open tab, in any window: what the shell keeps loaded.
+    pub fn open_roots(&self) -> HashSet<String> {
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let Ok(ws) = self.read_ws(inner) else { return HashSet::new() };
+        let mut roots = HashSet::new();
+        for id in ws.windows.iter().flat_map(|w| &w.tabs) {
+            if let Some(Tab { root: Some(root), .. }) = self.read_tab_logged(inner, id) {
+                roots.insert(root);
+            }
+        }
+        roots
+    }
+
     // ---------- history ----------
 
     /// Saves `snap` as the tab's newest analysis and keeps `HISTORY_LEN` of
@@ -377,6 +543,52 @@ impl SessionStore {
     }
 }
 
+/// Saves one run to its tab's history. Fact-check events can come before or
+/// after `done`: before, they're kept and saved with the notes; after, they
+/// update the saved snapshot. A run that never reaches `done` (a skip, an
+/// error, an edit that aborted it) saves nothing.
+pub struct Recorder<'a> {
+    store: &'a SessionStore,
+    tab: String,
+    pending: Snapshot,
+    saved: Option<u64>,
+}
+
+impl<'a> Recorder<'a> {
+    pub fn new(store: &'a SessionStore, tab: &str, draft: &str, context: &str) -> Self {
+        let pending = Snapshot { draft: draft.to_owned(), context: context.to_owned(), ..Snapshot::default() };
+        Self { store, tab: tab.to_owned(), pending, saved: None }
+    }
+
+    /// A notice about these notes: the pre-phase's, or the missing sections'.
+    pub fn notice(&mut self, message: &str) -> Result<()> {
+        self.apply(|s| s.notices.push(message.to_owned()))
+    }
+
+    pub fn check(&mut self, ev: &CheckEvent) -> Result<()> {
+        self.apply(|s| s.apply_check(ev))
+    }
+
+    /// Saves the notes and returns the snapshot's id. Call it before sending
+    /// `done`, so a `get_tab` right after `done` includes them.
+    pub fn done(&mut self, markdown: &str, partial: bool) -> Result<u64> {
+        let snap = Snapshot { at: self.store.now_secs(), markdown: markdown.to_owned(), partial, ..self.pending.clone() };
+        let id = self.store.record_snapshot(&self.tab, snap)?;
+        self.saved = Some(id);
+        Ok(id)
+    }
+
+    fn apply(&mut self, f: impl FnOnce(&mut Snapshot)) -> Result<()> {
+        match self.saved {
+            None => {
+                f(&mut self.pending);
+                Ok(())
+            }
+            Some(id) => self.store.update_snapshot(&self.tab, id, f),
+        }
+    }
+}
+
 fn validate(id: &str) -> Result<()> {
     if valid_id(id) {
         Ok(())
@@ -414,6 +626,7 @@ fn newest_first(t: &TabSummary) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jev::check::{CheckResult, Verdict};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// A store whose clock moves one second per reading, so timestamps order.
@@ -643,5 +856,246 @@ mod tests {
             }
         });
         assert_eq!(s.window_view("w-1").unwrap().tabs.len(), 8);
+    }
+
+    #[test]
+    fn closing_a_tab_keeps_it_for_recently_closed() {
+        let (_dir, s) = store();
+        let a = s.create_tab("w-1", Some("/a".into())).unwrap();
+        let b = s.create_tab("w-1", None).unwrap();
+        let c = s.create_tab("w-1", None).unwrap();
+        s.activate("w-1", &b.id).unwrap();
+        assert_eq!(s.close_tab(&b.id).unwrap().as_deref(), Some("w-1"));
+        let view = s.window_view("w-1").unwrap();
+        assert_eq!(ids(&view.tabs), [a.id.as_str(), c.id.as_str()]);
+        assert_eq!(view.active.map(|t| t.id), Some(c.id.clone()), "the tab that took its place");
+        assert_eq!(ids(&view.closed), [b.id.as_str()]);
+        assert!(view.closed[0].closed_at.is_some());
+        assert_eq!(s.open_tab_root(&b.id).unwrap_err().to_string(), "This tab was closed.");
+        assert_eq!(s.tab(&b.id).unwrap().id, b.id, "its file stays");
+        assert_eq!(s.close_tab(&b.id).unwrap(), None, "closing it again changes nothing");
+        s.close_tab(&c.id).unwrap();
+        assert_eq!(s.window_view("w-1").unwrap().active.map(|t| t.id), Some(a.id.clone()), "at the end: the one before it");
+        s.close_tab(&a.id).unwrap();
+        let empty = s.window_view("w-1").unwrap();
+        assert!(empty.tabs.is_empty() && empty.active.is_none(), "the window stays, empty");
+        assert_eq!(s.window_ids(), ["w-1"]);
+    }
+
+    #[test]
+    fn recently_closed_is_newest_first_and_a_half_finished_close_sorts_by_its_last_edit() {
+        let (dir, s) = store();
+        let a = s.create_tab("w-1", None).unwrap();
+        let b = s.create_tab("w-1", None).unwrap();
+        s.close_tab(&a.id).unwrap();
+        s.close_tab(&b.id).unwrap();
+        let closed = s.closed();
+        assert_eq!(ids(&closed), [b.id.as_str(), a.id.as_str()]);
+        let (a_at, b_at) = (closed[1].closed_at.unwrap(), closed[0].closed_at.unwrap());
+        // Tab files no window lists that never got `closedAt` (the app stopped mid-close),
+        // and files that aren't tabs.
+        let tabs = sessions(&dir).join("tabs");
+        std::fs::write(tabs.join("t-c0ffee.json"), format!(r#"{{"id":"t-c0ffee","updatedAt":{}}}"#, b_at + 100)).unwrap();
+        std::fs::write(tabs.join("t-01d.json"), format!(r#"{{"id":"t-01d","updatedAt":{}}}"#, a_at - 100)).unwrap();
+        std::fs::write(tabs.join("t-abc.json.bad"), "kept").unwrap();
+        std::fs::write(tabs.join("t-abc.json.tmp"), "half written").unwrap();
+        std::fs::write(tabs.join("notes.txt"), "not a tab").unwrap();
+        assert_eq!(ids(&s.closed()), ["t-c0ffee", b.id.as_str(), a.id.as_str(), "t-01d"]);
+    }
+
+    #[test]
+    fn reopening_puts_a_tab_back_and_refuses_an_open_one() {
+        let (_dir, s) = store();
+        let a = s.create_tab("w-1", None).unwrap();
+        s.close_tab(&a.id).unwrap();
+        let w2 = s.add_window().unwrap();
+        s.reopen_tab(&a.id, &w2).unwrap();
+        let view = s.window_view(&w2).unwrap();
+        assert_eq!(ids(&view.tabs), [a.id.as_str()]);
+        assert_eq!(view.active.as_ref().map(|t| (t.id.as_str(), t.closed_at)), Some((a.id.as_str(), None)));
+        assert!(view.closed.is_empty());
+        let err = s.reopen_tab(&a.id, "w-1").unwrap_err();
+        assert!(matches!(err, Error::Precondition(_)));
+        assert_eq!(err.to_string(), "That tab is already open in another window.");
+        assert_eq!(s.reopen_tab("t-dead", "w-1").unwrap_err().to_string(), "This tab was closed.");
+        s.close_tab(&a.id).unwrap();
+        assert_eq!(s.reopen_tab(&a.id, "w-9").unwrap_err().to_string(), "This window was closed.");
+    }
+
+    #[test]
+    fn only_closed_tabs_can_be_deleted() {
+        let (dir, s) = store();
+        let a = s.create_tab("w-1", None).unwrap();
+        assert_eq!(s.delete_tab(&a.id).unwrap_err().to_string(), "Close this tab before deleting it.");
+        s.close_tab(&a.id).unwrap();
+        s.delete_tab(&a.id).unwrap();
+        assert!(!sessions(&dir).join(format!("tabs/{}.json", a.id)).exists());
+        assert!(s.closed().is_empty());
+        assert_eq!(s.tab(&a.id).unwrap_err().to_string(), "This tab was closed.");
+        s.delete_tab(&a.id).unwrap(); // already gone: nothing to do
+    }
+
+    #[test]
+    fn a_closed_tab_still_takes_a_late_draft_save() {
+        let (_dir, s) = store();
+        let a = s.create_tab("w-1", None).unwrap();
+        s.close_tab(&a.id).unwrap();
+        s.save_draft(&a.id, "typed just before closing".into()).unwrap();
+        assert_eq!(s.tab(&a.id).unwrap().draft, "typed just before closing");
+        assert_eq!(ids(&s.closed()), [a.id.as_str()], "and it stays closed");
+    }
+
+    #[test]
+    fn closing_a_window_closes_its_tabs() {
+        let (_dir, s) = store();
+        let w2 = s.add_window().unwrap();
+        let x = s.create_tab(&w2, Some("/x".into())).unwrap();
+        let y = s.create_tab(&w2, None).unwrap();
+        assert_eq!(s.close_window(&w2).unwrap(), [x.id.clone(), y.id.clone()]);
+        assert_eq!(s.window_ids(), ["w-1"]);
+        let closed = s.closed();
+        assert_eq!(closed.len(), 2);
+        assert!(closed.iter().all(|t| t.closed_at.is_some()));
+        assert_eq!(s.close_window(&w2).unwrap_err().to_string(), "This window was closed.");
+        assert_eq!(s.add_window().unwrap(), "w-3", "window ids are never reused");
+    }
+
+    #[test]
+    fn moving_a_tab() {
+        let (_dir, s) = store();
+        let a = s.create_tab("w-1", None).unwrap();
+        let b = s.create_tab("w-1", None).unwrap(); // active
+        assert_eq!(s.move_tab(&b.id, None).unwrap(), ("w-1".to_owned(), "w-2".to_owned()), "None makes a new window");
+        let here = s.window_view("w-1").unwrap();
+        assert_eq!(ids(&here.tabs), [a.id.as_str()]);
+        assert_eq!(here.active.map(|t| t.id), Some(a.id.clone()), "the old window no longer shows it");
+        let there = s.window_view("w-2").unwrap();
+        assert_eq!(ids(&there.tabs), [b.id.as_str()]);
+        assert_eq!(there.active.map(|t| t.id), Some(b.id.clone()));
+        assert_eq!(s.move_tab(&a.id, Some("w-2")).unwrap(), ("w-1".to_owned(), "w-2".to_owned()));
+        let there = s.window_view("w-2").unwrap();
+        assert_eq!(ids(&there.tabs), [b.id.as_str(), a.id.as_str()], "it joins the end");
+        assert_eq!(there.active.map(|t| t.id), Some(b.id.clone()), "that window keeps showing its own tab");
+        assert!(s.window_view("w-1").unwrap().active.is_none());
+        assert_eq!(s.move_tab(&a.id, Some("w-2")).unwrap(), ("w-2".to_owned(), "w-2".to_owned()), "already there");
+        assert_eq!(s.move_tab(&a.id, Some("w-9")).unwrap_err().to_string(), "This window was closed.");
+        assert_eq!(ids(&s.window_view("w-2").unwrap().tabs), [b.id.as_str(), a.id.as_str()], "a failed move changes nothing");
+        s.close_tab(&a.id).unwrap();
+        assert_eq!(s.move_tab(&a.id, None).unwrap_err().to_string(), "This tab was closed.");
+    }
+
+    #[test]
+    fn legacy_drafts_are_imported_once() {
+        let (dir, s) = store();
+        assert!(s.window_view("w-1").unwrap().fresh);
+        let drafts = vec![
+            LegacyDraft { root: Some("/b".into()), draft: "b idea".into() },
+            LegacyDraft { root: None, draft: "a loose idea".into() },
+            LegacyDraft { root: Some("/a".into()), draft: "  \n".into() },
+        ];
+        s.import_legacy("w-1", drafts, Some("/b".into())).unwrap();
+        let view = s.window_view("w-1").unwrap();
+        assert!(!view.fresh);
+        let tabs: Vec<(Option<&str>, &str)> = view.tabs.iter().map(|t| (t.root.as_deref(), t.first_line.as_str())).collect();
+        assert_eq!(tabs, [(Some("/b"), "b idea"), (None, "a loose idea")], "empty drafts are skipped");
+        assert_eq!(view.active.and_then(|t| t.root), Some("/b".to_owned()), "the last project's tab is active");
+        s.import_legacy("w-1", vec![LegacyDraft { root: None, draft: "again".into() }], None).unwrap();
+        assert_eq!(s.window_view("w-1").unwrap().tabs.len(), 2, "a second import does nothing");
+        assert!(!at(&dir).window_view("w-1").unwrap().fresh, "nor does the next launch offer one");
+    }
+
+    #[test]
+    fn without_a_last_project_the_no_project_draft_is_active() {
+        let (_dir, s) = store();
+        let drafts = vec![
+            LegacyDraft { root: Some("/a".into()), draft: "a".into() },
+            LegacyDraft { root: None, draft: "loose".into() },
+        ];
+        s.import_legacy("w-1", drafts, None).unwrap();
+        assert_eq!(s.window_view("w-1").unwrap().active.map(|t| t.draft), Some("loose".to_owned()));
+        let (_dir2, s2) = store();
+        s2.import_legacy("w-1", vec![LegacyDraft { root: Some("/a".into()), draft: "a".into() }], Some("/gone".into())).unwrap();
+        assert_eq!(s2.window_view("w-1").unwrap().active.map(|t| t.draft), Some("a".to_owned()), "no match: the first tab");
+    }
+
+    #[test]
+    fn open_roots_are_the_projects_of_open_tabs() {
+        let (_dir, s) = store();
+        s.create_tab("w-1", Some("/a".into())).unwrap();
+        let b = s.create_tab("w-1", Some("/b".into())).unwrap();
+        s.create_tab("w-1", None).unwrap();
+        let w2 = s.add_window().unwrap();
+        s.create_tab(&w2, Some("/c".into())).unwrap();
+        s.close_tab(&b.id).unwrap();
+        let mut roots: Vec<String> = s.open_roots().into_iter().collect();
+        roots.sort_unstable();
+        assert_eq!(roots, ["/a", "/c"]);
+        assert_eq!(s.window_of(&b.id), None);
+    }
+
+    fn check(claim: &str) -> CheckResult {
+        CheckResult {
+            claim: claim.into(),
+            verdict: Verdict::Confirmed,
+            confidence: Some(0.9),
+            path: Some("src/a.rs".into()),
+            line: Some(1),
+        }
+    }
+
+    #[test]
+    fn a_run_is_saved_at_done_with_the_checks_that_came_first() {
+        let (_dir, s) = store();
+        let tab = s.create_tab("w-1", Some("/p".into())).unwrap();
+        let mut rec = Recorder::new(&s, &tab.id, "the draft", "/p|1|");
+        rec.notice("Jev was slow; used keyword order.").unwrap();
+        rec.check(&CheckEvent::Checking { count: 2, total: 3 }).unwrap();
+        rec.check(&CheckEvent::Result(check("first"))).unwrap();
+        assert!(s.tab(&tab.id).unwrap().history.is_empty(), "nothing is saved before done");
+        let id = rec.done("## Intent\n- x", false).unwrap();
+        let t = s.tab(&tab.id).unwrap();
+        let saved = &t.history[0];
+        assert_eq!(saved.id, id);
+        assert_eq!((saved.draft.as_str(), saved.context.as_str(), saved.markdown.as_str()), ("the draft", "/p|1|", "## Intent\n- x"));
+        assert_eq!(saved.notices, ["Jev was slow; used keyword order."]);
+        assert_eq!(saved.checks, [check("first")]);
+        assert_eq!((saved.checks_total, saved.checks_faults, saved.checks_stopped, saved.partial), (Some(2), Some(3), false, false));
+        assert!(saved.at > 0);
+        // Later checks and notices update the saved snapshot.
+        rec.check(&CheckEvent::Result(check("second"))).unwrap();
+        rec.check(&CheckEvent::Notice("Jev is unavailable.".into())).unwrap();
+        let t = s.tab(&tab.id).unwrap();
+        assert_eq!(t.history.len(), 1);
+        assert_eq!(t.history[0].checks, [check("first"), check("second")]);
+        assert_eq!(t.history[0].notices, ["Jev was slow; used keyword order.", "Jev is unavailable."]);
+        assert!(t.history[0].checks_stopped);
+    }
+
+    #[test]
+    fn checks_cut_off_by_an_edit_stay_short_of_their_total() {
+        // The next keystroke aborts the run after done: the snapshot keeps what arrived.
+        let (_dir, s) = store();
+        let tab = s.create_tab("w-1", None).unwrap();
+        let mut rec = Recorder::new(&s, &tab.id, "d", "|0|");
+        rec.check(&CheckEvent::Checking { count: 3, total: 3 }).unwrap();
+        rec.done("## Faults\n- a", true).unwrap();
+        rec.check(&CheckEvent::Result(check("first"))).unwrap();
+        drop(rec);
+        let t = s.tab(&tab.id).unwrap();
+        assert_eq!((t.history[0].checks.len(), t.history[0].checks_total, t.history[0].checks_stopped), (1, Some(3), false));
+        assert!(t.history[0].partial);
+    }
+
+    #[test]
+    fn a_run_that_never_reaches_done_saves_nothing() {
+        let (_dir, s) = store();
+        let tab = s.create_tab("w-1", None).unwrap();
+        let mut rec = Recorder::new(&s, &tab.id, "d", "|0|");
+        rec.notice("Jev was slow; used keyword order.").unwrap();
+        rec.check(&CheckEvent::Checking { count: 1, total: 1 }).unwrap();
+        drop(rec);
+        assert!(s.tab(&tab.id).unwrap().history.is_empty());
+        let mut gone = Recorder::new(&s, "t-dead", "d", "|0|");
+        assert_eq!(gone.done("## Intent", false).unwrap_err().to_string(), "This tab was closed.");
     }
 }
