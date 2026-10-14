@@ -72,6 +72,8 @@ pub fn run() {
             commands::delete_tab,
             commands::import_legacy_drafts,
             commands::open_window,
+            commands::move_tab,
+            commands::list_windows,
             commands::local_inventory,
             commands::install_runtime,
             commands::download_model,

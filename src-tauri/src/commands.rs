@@ -15,7 +15,7 @@ use livebrainstorm_core::llm::Chunk;
 use livebrainstorm_core::local::{self, catalog, download, runtime, LocalInventory};
 use livebrainstorm_core::project::explore;
 use livebrainstorm_core::project::{self, BriefStatus, StoredBrief};
-use livebrainstorm_core::sessions::{valid_id, LegacyDraft, Recorder, Tab, WindowView};
+use livebrainstorm_core::sessions::{valid_id, LegacyDraft, Recorder, Tab, WindowSummary, WindowView};
 use livebrainstorm_core::settings::{ProviderSettings, Settings, Tier};
 use livebrainstorm_core::{prompt, Error, Result};
 use serde::Serialize;
@@ -436,6 +436,51 @@ pub async fn open_window(app: AppHandle) -> Result<String> {
     }
     events::workspace_changed(&app, vec![id.clone()]);
     Ok(id)
+}
+
+/// Moves a tab to another window, or to a new one (`to: None`), and makes it active there.
+/// Its running analysis stops: the run's Channel belongs to the old window, and the new
+/// window re-runs at the next pause. Returns the target window's id. `async`: it may build
+/// a window, which deadlocks in a synchronous command on Windows.
+#[tauri::command]
+pub async fn move_tab(app: AppHandle, tab_id: String, to: Option<String>) -> Result<String> {
+    check_id(&tab_id)?;
+    if let Some(window) = &to {
+        check_id(window)?;
+    }
+    let state = app.state::<AppState>();
+    let (from, to) = state.sessions.move_tab(&tab_id, to.as_deref())?;
+    if from == to {
+        return Ok(to); // already there: nothing moved, and its run goes on
+    }
+    cancel_task(&state.analyses, &tab_id); // drops the claude children too (kill_on_drop)
+    if let Err(e) = state.sessions.activate(&to, &tab_id) {
+        eprintln!("LiveBrainstorm: moved tab {tab_id} to {to} but couldn't show it there: {e}");
+    }
+    match app.get_webview_window(&to) {
+        Some(window) => {
+            let _ = window.set_focus();
+        }
+        None => {
+            if let Err(e) = windows::build(&app, &to) {
+                // Put it back rather than strand it in a window that isn't on screen.
+                let _ = state.sessions.move_tab(&tab_id, Some(from.as_str()));
+                let _ = state.sessions.activate(&from, &tab_id);
+                let _ = state.sessions.close_window(&to);
+                events::workspace_changed(&app, vec![from]);
+                return Err(e);
+            }
+        }
+    }
+    state.evict_unused_projects();
+    events::workspace_changed(&app, vec![from, to.clone()]);
+    Ok(to)
+}
+
+/// Every window, named by its active tab, for the *Move to* items.
+#[tauri::command]
+pub fn list_windows(state: State<'_, AppState>) -> Result<Vec<WindowSummary>> {
+    state.sessions.windows()
 }
 
 // ---------- live analysis ----------
