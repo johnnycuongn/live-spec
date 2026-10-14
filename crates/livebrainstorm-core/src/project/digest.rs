@@ -40,7 +40,7 @@ fn build_where(index: &ProjectIndex, budget: usize, keep: impl Fn(&str) -> bool,
         .files
         .iter()
         .filter(|f| keep(&f.rel))
-        .partition(|f| KEY_FILES.contains(&file_name(&f.rel).to_lowercase().as_str()));
+        .partition(|f| is_key_file(&f.rel));
 
     out.push_str("\n## Key files\n");
     for f in key {
@@ -93,6 +93,11 @@ fn push_file(out: &mut String, f: &FileEntry, max_lines: usize, max_chars: usize
     let cut = (0..=limit.min(body.len())).rev().find(|i| body.is_char_boundary(*i)).unwrap_or(0);
     out.push_str(&format!("\n<file path=\"{}\">\n{}\n</file>\n", f.rel, &body[..cut]));
     true
+}
+
+/// README, manifests and agent docs: what an overview always includes.
+pub(crate) fn is_key_file(rel: &str) -> bool {
+    KEY_FILES.contains(&file_name(rel).to_lowercase().as_str())
 }
 
 fn file_name(rel: &str) -> &str {

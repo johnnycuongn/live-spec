@@ -174,7 +174,7 @@ All questions keep each `state` small and on topic, as Jev's "large irrelevant s
 ## Brief build (parallel explorers)
 
 1. **Slices** (`explore::slices(index, n)`, plain code):
-   - Group indexed files by their first path segment. Root-level files are excluded and go to the merge step.
+   - Group indexed files by their first path segment. Root-level key files (README, manifests, agent docs) go to the merge step via the overview; other root files are explored as single-file entries (changed after the phase 4 review: excluding them meant root source code, e.g. a Go service's `*.go`, was read by nobody).
    - If one group holds more than 50% of the bytes and has subfolders, split it one level deeper.
    - Assign groups largest-first to the lightest slice.
    - Slice count is `min(n, groups)`. If fewer than 40 files are indexed, use 1 slice.

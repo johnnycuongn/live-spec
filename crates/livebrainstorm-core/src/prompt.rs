@@ -159,7 +159,8 @@ pub fn merge_request(index: &ProjectIndex, provider: &Provider, notes: &[Note], 
         ),
         user,
         max_tokens: 4_000,
-        cwd: None,
+        // The project's own CLAUDE.md, not whatever directory the app runs in.
+        cwd: Some(index.root.clone()),
         allow_repo_tools: false,
         max_turns: None,
     }
@@ -415,7 +416,8 @@ when the context doesn't cover something, say so instead of guessing. Never rest
             Note { agent: 3, prefixes: vec!["src/cart/".into()], text: "## Modules\n- cart".into() },
         ];
         let req = merge_request(&idx, &claude(), &notes, &["docs/".into()]);
-        assert!(!req.allow_repo_tools && req.max_turns.is_none() && req.cwd.is_none());
+        assert!(!req.allow_repo_tools && req.max_turns.is_none());
+        assert_eq!(req.cwd.as_deref(), Some(idx.root.as_path()), "the project's own CLAUDE.md, not the app's working directory");
         assert!(req.user.contains("<notes agent=\"1\" paths=\"src/billing/\">") && req.user.contains("- cart"));
         assert!(req.user.contains("<unmapped>docs/</unmapped>") && req.user.contains("An online shop"));
         assert!(req.system.contains("## Purpose") && req.system.contains("1,200 words") && req.system.contains("Gaps and TODOs"));

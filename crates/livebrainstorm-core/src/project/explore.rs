@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use super::digest::is_key_file;
 use super::ProjectIndex;
 use crate::{Error, Result};
 
@@ -30,15 +31,22 @@ pub fn in_slice(rel: &str, prefixes: &[String]) -> bool {
     prefixes.iter().any(|p| if p.ends_with('/') { rel.starts_with(p.as_str()) } else { rel == p })
 }
 
-/// Up to `n` slices of roughly equal size. Root-level files belong to none
-/// of them (the merge step reads them); fewer than `MIN_FILES_TO_SPLIT`
-/// files, or `n <= 1`, gives a single slice.
+/// Up to `n` slices of roughly equal size. Root-level README and manifest
+/// files belong to none of them (the merge reads them in the overview);
+/// other root files are explored like folders. Fewer than
+/// `MIN_FILES_TO_SPLIT` files, or `n <= 1`, gives a single slice.
 pub fn slices(index: &ProjectIndex, n: usize) -> Vec<Slice> {
     // (prefix -> files, bytes) for every first-level folder.
     let mut groups: BTreeMap<String, (usize, u64)> = BTreeMap::new();
-    for f in index.files.iter().filter(|f| f.rel.contains('/')) {
-        let top = format!("{}/", f.rel.split('/').next().unwrap_or_default());
-        let entry = groups.entry(top).or_default();
+    for f in &index.files {
+        let key = match f.rel.split_once('/') {
+            Some((top, _)) => format!("{top}/"),
+            // README and manifests reach the merge through the overview.
+            None if is_key_file(&f.rel) => continue,
+            // Other root files (main.go, app.py) are explored like a folder.
+            None => f.rel.clone(),
+        };
+        let entry = groups.entry(key).or_default();
         entry.0 += 1;
         entry.1 += f.size;
     }
@@ -236,5 +244,33 @@ mod tests {
     fn source_names_the_agent_count() {
         assert_eq!(brief_source("Claude Code (haiku)", 1), "Claude Code (haiku)");
         assert_eq!(brief_source("Claude Code (haiku)", 4), "Claude Code (haiku) · 4 agents");
+    }
+
+    #[test]
+    fn root_source_files_are_explored_not_dropped() {
+        // A Go service: 30 .go files at the root, plus internal/, cmd/, docs/ and a README.
+        let mut files: Vec<(String, usize)> = vec![("README.md".into(), 500), ("go.mod".into(), 100)];
+        for i in 0..30 {
+            files.push((format!("server{i}.go"), 2_000));
+        }
+        for i in 0..8 {
+            files.push((format!("internal/store{i}.go"), 1_000));
+        }
+        files.push(("cmd/main.go".into(), 500));
+        files.push(("cmd/cli.go".into(), 500));
+        for i in 0..5 {
+            files.push((format!("docs/d{i}.md"), 300));
+        }
+        let refs: Vec<(&str, usize)> = files.iter().map(|(p, s)| (p.as_str(), *s)).collect();
+        let idx = scan(repo(&refs).path()).unwrap();
+        let s = slices(&idx, 4);
+        assert!(s.len() > 1);
+        for i in 0..30 {
+            let rel = format!("server{i}.go");
+            assert_eq!(s.iter().filter(|slice| in_slice(&rel, &slice.prefixes)).count(), 1, "{rel}");
+        }
+        for key in ["README.md", "go.mod"] {
+            assert!(s.iter().all(|slice| !in_slice(key, &slice.prefixes)), "{key} stays with the merge's overview");
+        }
     }
 }
