@@ -3,6 +3,7 @@ import {
   api,
   errorMessage,
   type AgentSettings,
+  type Effort,
   type JevSettings,
   type JevStatus,
   type LocalStatus,
@@ -11,7 +12,7 @@ import {
 } from "../lib/ipc";
 import { formatBytes, pauseDownload, startDownload, useDownloads } from "../lib/downloads";
 import { agentHint, clampAgents, clampedAgents, jevHint, jevUsable, keySourceLabel, PARALLEL_BRIEF_HINT, PARALLEL_NOTES_HINT } from "../lib/settingsHints";
-import { CLAUDE_ALIASES } from "../lib/providerOptions";
+import { CLAUDE_ALIASES, EFFORT_OPTIONS, checkModels, isCustomModel } from "../lib/providerOptions";
 import { Button, Eyebrow, Field, Toggle, cx, inputClass } from "./ui";
 
 interface Props {
@@ -58,10 +59,12 @@ export function SettingsDialog({ settings, onSave, onClose }: Props) {
   const updateJev = (j: Partial<JevSettings>) => setDraft((d) => ({ ...d, jev: { ...d.jev, ...j } }));
 
   const save = async () => {
+    const { provider, error: modelError } = checkModels(draft.provider);
+    if (modelError) return setError(modelError);
     setSaving(true);
     setError(null);
     try {
-      await onSave({ ...draft, agents: clampedAgents(draft.agents) });
+      await onSave({ ...draft, provider, agents: clampedAgents(draft.agents) });
       onClose();
     } catch (e) {
       setError(errorMessage(e));
@@ -174,25 +177,79 @@ function ClaudeCliFields({ p, patch }: { p: Extract<ProviderSettings, { kind: "c
       <Field label="Claude Code location (leave empty to find it automatically)">
         <div className="flex gap-2">
           <input className={inputClass} value={p.binaryPath ?? ""} placeholder="claude" onChange={(e) => patch({ binaryPath: e.target.value || null })} />
-          <Button onClick={run}>Check</Button>
+          <Button className="shrink-0" onClick={run}>Check</Button>
         </div>
         {check && <small className="text-xs text-muted">{check}</small>}
       </Field>
-      <div className="flex gap-3">
-        <ModelSelect label="While you type" value={p.fastModel} options={CLAUDE_ALIASES} onChange={(fastModel) => patch({ fastModel })} />
-        <ModelSelect label="Project brief" value={p.deepModel} options={CLAUDE_ALIASES} onChange={(deepModel) => patch({ deepModel })} />
+      <fieldset className="grid gap-1.5">
+        <legend className="mb-1.5 text-xs text-muted">Sign in with</legend>
+        <div className="flex flex-wrap gap-x-5 gap-y-1.5 text-[13px]">
+          <label className="flex cursor-pointer items-center gap-2">
+            <input type="radio" name="claude-auth" className="accent-accent" checked={p.auth === "login"} onChange={() => patch({ auth: "login" })} />
+            My Claude Code login
+          </label>
+          <label className="flex cursor-pointer items-center gap-2">
+            <input type="radio" name="claude-auth" className="accent-accent" checked={p.auth === "apiKey"} onChange={() => patch({ auth: "apiKey" })} />
+            My Anthropic API key
+          </label>
+        </div>
+      </fieldset>
+      {p.auth === "apiKey" && <ApiKeyField note="Usage is billed to your API account, not your Claude subscription." />}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="grid content-start gap-2">
+          <ModelPicker label="While you type" value={p.fastModel} onChange={(fastModel) => patch({ fastModel })} />
+          <EffortSelect label="Effort while you type" value={p.fastEffort} onChange={(fastEffort) => patch({ fastEffort })} />
+        </div>
+        <div className="grid content-start gap-2">
+          <ModelPicker label="Project brief" value={p.deepModel} onChange={(deepModel) => patch({ deepModel })} />
+          <EffortSelect label="Effort for the brief" value={p.deepEffort} onChange={(deepEffort) => patch({ deepEffort })} />
+        </div>
       </div>
     </div>
   );
 }
 
-function ModelSelect(props: { label: string; value: string; options: string[]; onChange: (v: string) => void }) {
+/** An alias, or "Custom…" with a text field for a full model id. */
+function ModelPicker(props: { label: string; value: string; onChange: (v: string) => void }) {
+  const [custom, setCustom] = useState(isCustomModel(props.value));
   return (
     <Field label={props.label}>
-      <select className={inputClass} value={props.value} onChange={(e) => props.onChange(e.target.value)}>
-        {props.options.map((o) => (
+      <select
+        className={inputClass}
+        value={custom ? "custom" : props.value}
+        onChange={(e) => {
+          const v = e.target.value;
+          setCustom(v === "custom");
+          props.onChange(v === "custom" ? "" : v);
+        }}
+      >
+        {CLAUDE_ALIASES.map((o) => (
           <option key={o} value={o}>
             {o[0].toUpperCase() + o.slice(1)}
+          </option>
+        ))}
+        <option value="custom">Custom…</option>
+      </select>
+      {custom && (
+        <input
+          className={inputClass}
+          value={props.value}
+          placeholder="claude-opus-5-5"
+          aria-label={`${props.label}: model id`}
+          onChange={(e) => props.onChange(e.target.value)}
+        />
+      )}
+    </Field>
+  );
+}
+
+function EffortSelect(props: { label: string; value: Effort | null; onChange: (v: Effort | null) => void }) {
+  return (
+    <Field label={props.label}>
+      <select className={inputClass} value={props.value ?? ""} onChange={(e) => props.onChange((e.target.value || null) as Effort | null)}>
+        {EFFORT_OPTIONS.map((o) => (
+          <option key={o.label} value={o.value ?? ""}>
+            {o.label}
           </option>
         ))}
       </select>
@@ -200,8 +257,9 @@ function ModelSelect(props: { label: string; value: string; options: string[]; o
   );
 }
 
-function ApiFields({ p, patch }: { p: Extract<ProviderSettings, { kind: "anthropicApi" }>; patch: (f: Partial<ProviderSettings>) => void }) {
-  const [hasKey, setHasKey] = useState(false);
+/** The Anthropic API key in the system keychain; shared by both Claude providers. */
+function ApiKeyField({ note: extra }: { note?: string }) {
+  const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [key, setKey] = useState("");
   const [note, setNote] = useState<string | null>(null);
   useEffect(() => void api.hasApiKey().then(setHasKey), []);
@@ -218,27 +276,42 @@ function ApiFields({ p, patch }: { p: Extract<ProviderSettings, { kind: "anthrop
   };
 
   return (
+    <Field label={`Anthropic API key${hasKey ? " (saved in your keychain)" : ""}`}>
+      <div className="flex gap-2">
+        <input
+          type="password"
+          className={inputClass}
+          value={key}
+          placeholder={hasKey ? "Paste a new key to replace it" : "sk-ant-…"}
+          onChange={(e) => setKey(e.target.value)}
+        />
+        <Button className="shrink-0" onClick={saveKey} disabled={!key.trim() && !hasKey}>
+          {key.trim() || !hasKey ? "Save key" : "Remove key"}
+        </Button>
+      </div>
+      {note ? <small className="text-xs text-muted">{note}</small> : hasKey === false && <small className="text-xs text-muted">No key saved yet.</small>}
+      {extra && <small className="text-xs text-muted">{extra}</small>}
+    </Field>
+  );
+}
+
+function ApiFields({ p, patch }: { p: Extract<ProviderSettings, { kind: "anthropicApi" }>; patch: (f: Partial<ProviderSettings>) => void }) {
+  return (
     <div className="grid gap-3">
-      <Field label={`API key${hasKey ? " (saved in your keychain)" : ""}`}>
-        <div className="flex gap-2">
-          <input
-            type="password"
-            className={inputClass}
-            value={key}
-            placeholder={hasKey ? "Paste a new key to replace it" : "sk-ant-…"}
-            onChange={(e) => setKey(e.target.value)}
-          />
-          <Button className="shrink-0" onClick={saveKey}>{key.trim() || !hasKey ? "Save key" : "Remove key"}</Button>
+      <ApiKeyField />
+      <div className="grid grid-cols-2 gap-3">
+        <div className="grid content-start gap-2">
+          <Field label="While you type">
+            <input className={inputClass} value={p.fastModel} onChange={(e) => patch({ fastModel: e.target.value })} />
+          </Field>
+          <EffortSelect label="Effort while you type" value={p.fastEffort} onChange={(fastEffort) => patch({ fastEffort })} />
         </div>
-        {note && <small className="text-xs text-muted">{note}</small>}
-      </Field>
-      <div className="flex gap-3">
-        <Field label="While you type">
-          <input className={inputClass} value={p.fastModel} onChange={(e) => patch({ fastModel: e.target.value })} />
-        </Field>
-        <Field label="Project brief">
-          <input className={inputClass} value={p.deepModel} onChange={(e) => patch({ deepModel: e.target.value })} />
-        </Field>
+        <div className="grid content-start gap-2">
+          <Field label="Project brief">
+            <input className={inputClass} value={p.deepModel} onChange={(e) => patch({ deepModel: e.target.value })} />
+          </Field>
+          <EffortSelect label="Effort for the brief" value={p.deepEffort} onChange={(deepEffort) => patch({ deepEffort })} />
+        </div>
       </div>
     </div>
   );

@@ -16,7 +16,7 @@ Then pick a model in Settings (top right):
 
 | Provider | Setup | When to use |
 |---|---|---|
-| **Claude subscription** (default) | Install [Claude Code](https://docs.claude.com/en/docs/claude-code/overview), run `claude` once to log in | Your own machine, your own subscription |
+| **Claude subscription** (default) | Install [Claude Code](https://docs.claude.com/en/docs/claude-code/overview), run `claude` once to log in, or sign it in with your own API key (below) | Your own machine, your own subscription |
 | **Anthropic API key** | Paste a key; it's stored in the OS keychain | Sharing LiveBrainstorm with anyone else |
 | **Local model** | Click *Install engine*, then *Download* a model | Private/offline; weaker critique |
 
@@ -28,7 +28,9 @@ With a key, Jev also skips re-analysis when an edit doesn't change the idea, and
 
 ### Requirements for the Claude subscription option
 
-LiveBrainstorm runs Claude Code in restricted mode (`--restricted`, so a project you open can't run its own hooks or servers). That mode ignores every Claude Code settings file, including your own `~/.claude/settings.json`, so authentication must come from your normal Claude Code login or from environment variables. Setups that depend on `apiKeyHelper` or an `env` block in settings (Bedrock, Vertex, a proxy base URL) need those exported in the environment instead. It also needs a Claude Code version that supports `--restricted`; if yours is older, update it with `claude update`.
+LiveBrainstorm runs Claude Code in restricted mode (`--restricted`, so a project you open can't run its own hooks or servers). That mode ignores every Claude Code settings file, including your own `~/.claude/settings.json`, so authentication must come from your normal Claude Code login, from environment variables, or from **Sign in with: My Anthropic API key** in Settings. That option passes the key saved in your system keychain to Claude Code as `ANTHROPIC_API_KEY`, and usage is billed to your API account instead of your subscription. Use it if you relied on `apiKeyHelper`. Setups that depend on an `env` block in settings (Bedrock, Vertex, a proxy base URL) need those exported in the environment instead. It also needs a Claude Code version that supports `--restricted`; if yours is older, update it with `claude update`.
+
+Both Claude options have a model and an effort level for the notes (*While you type*) and for the brief (*Project brief*). Claude Code takes an alias (`haiku`, `sonnet`, `opus`, `fable`) or any full model id through *Custom…*. Effort *Default* leaves the model's own level; lower effort usually means faster notes.
 
 ## How it works
 
