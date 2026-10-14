@@ -398,8 +398,10 @@ pub fn activate_tab(app: AppHandle, window: String, tab_id: String) -> Result<()
 pub fn close_tab(app: AppHandle, tab_id: String) -> Result<()> {
     check_id(&tab_id)?;
     let state = app.state::<AppState>();
-    cancel_task(&state.analyses, &tab_id); // drops the Claude CLI children too (kill_on_drop)
+    // Close first, then cancel: `analyze` re-checks the tab after registering its task, so
+    // whichever order they interleave in, a run on a closed tab is cancelled by one of the two.
     let window = state.sessions.close_tab(&tab_id)?;
+    cancel_task(&state.analyses, &tab_id); // drops the Claude CLI children too (kill_on_drop)
     state.evict_unused_projects();
     events::workspace_changed(&app, window.into_iter().collect());
     Ok(())
