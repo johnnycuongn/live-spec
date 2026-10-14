@@ -2,6 +2,7 @@
 //! logic that doesn't need Tauri lives in the core crate.
 
 mod commands;
+mod events;
 mod provider;
 mod secrets;
 mod state;
@@ -29,6 +30,7 @@ pub fn run() {
             commands::check_claude,
             commands::warm_up,
             commands::open_project,
+            commands::project_summary,
             commands::get_instructions,
             commands::save_project_instructions,
             commands::save_templates,

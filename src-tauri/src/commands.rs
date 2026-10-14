@@ -2,7 +2,8 @@
 //! immediately and streams over a per-call `Channel`, so the UI never blocks
 //! and each request's events can't leak into another's.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use livebrainstorm_core::agents;
@@ -14,6 +15,7 @@ use livebrainstorm_core::llm::Chunk;
 use livebrainstorm_core::local::{self, catalog, download, runtime, LocalInventory};
 use livebrainstorm_core::project::explore;
 use livebrainstorm_core::project::{self, BriefStatus, StoredBrief};
+use livebrainstorm_core::sessions::{valid_id, Recorder};
 use livebrainstorm_core::settings::{ProviderSettings, Settings, Tier};
 use livebrainstorm_core::{prompt, Error, Result};
 use serde::Serialize;
@@ -21,9 +23,10 @@ use tauri::ipc::Channel;
 use tokio::sync::oneshot;
 use tauri::{AppHandle, Manager, State};
 
+use crate::events::{self, BriefState};
 use crate::provider;
 use crate::secrets;
-use crate::state::{replace_task, AppState};
+use crate::state::{cancel_task, replace_task, AppState, ProjectEntry};
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -147,36 +150,81 @@ pub struct ProjectSummary {
     brief: Option<StoredBrief>,
 }
 
-#[tauri::command]
-pub async fn open_project(app: AppHandle, path: String) -> Result<ProjectSummary> {
-    let root = PathBuf::from(path);
+impl ProjectSummary {
+    fn of(entry: &ProjectEntry) -> Self {
+        let index = &entry.index;
+        Self {
+            name: index.name.clone(),
+            root: index.root.display().to_string(),
+            indexed_files: index.files.len(),
+            total_files: index.tree.len(),
+            brief_status: BriefStatus::of(entry.brief.as_ref(), index),
+            brief: entry.brief.clone(),
+        }
+    }
+}
+
+/// Scans `root` on a blocking thread, loads its cached brief, and puts it in
+/// the registry under its canonical root, replacing any earlier entry. Other
+/// projects stay loaded.
+async fn load_project(state: &AppState, root: PathBuf) -> Result<Arc<ProjectEntry>> {
     let index = tauri::async_runtime::spawn_blocking(move || project::scan(&root))
         .await
         .map_err(|e| Error::Provider(format!("Scan failed: {e}")))??;
-
-    let state = app.state::<AppState>();
     let brief = state.briefs.load(&index.root);
-    let summary = ProjectSummary {
-        name: index.name.clone(),
-        root: index.root.display().to_string(),
-        indexed_files: index.files.len(),
-        total_files: index.tree.len(),
-        brief_status: BriefStatus::of(brief.as_ref(), &index),
-        brief: brief.clone(),
-    };
-    *state.project.write().expect("project lock") = Some(index.into());
-    *state.brief.write().expect("brief lock") = brief;
-    Ok(summary)
+    let entry = Arc::new(ProjectEntry { index: Arc::new(index), brief });
+    let key = entry.index.root.display().to_string();
+    state.projects.write().expect("projects lock").insert(key, entry.clone());
+    Ok(entry)
 }
 
+/// The loaded project for a tab's root, scanned first if no window has loaded
+/// it since launch.
+async fn project_or_scan(state: &AppState, root: &str) -> Result<Arc<ProjectEntry>> {
+    if let Some(entry) = state.project_entry(root) {
+        return Ok(entry);
+    }
+    if !Path::new(root).is_dir() {
+        return Err(Error::Precondition("That folder no longer exists. Open it again from its new place.".into()));
+    }
+    load_project(state, PathBuf::from(root)).await
+}
+
+/// "Open a project…", and explicit refreshes: always rescans.
 #[tauri::command]
-pub async fn build_brief(app: AppHandle, on_event: Channel<UiEvent>) -> Result<()> {
+pub async fn open_project(app: AppHandle, path: String) -> Result<ProjectSummary> {
     let state = app.state::<AppState>();
-    let index = state.project().ok_or_else(|| Error::Precondition("Open a project first.".into()))?;
+    let entry = load_project(&state, PathBuf::from(path)).await?;
+    Ok(ProjectSummary::of(&entry))
+}
+
+/// The summary a window shows for a tab's project. Scans only a project that
+/// isn't loaded yet.
+#[tauri::command]
+pub async fn project_summary(app: AppHandle, root: String) -> Result<ProjectSummary> {
+    let state = app.state::<AppState>();
+    let entry = project_or_scan(&state, &root).await?;
+    Ok(ProjectSummary::of(&entry))
+}
+
+/// One build per project. While one runs for `root`, another request (from
+/// any window) returns at once and follows it through `brief-status`, which
+/// every window receives. The window that started it also gets the live text
+/// and activity over its Channel.
+#[tauri::command]
+pub async fn build_brief(app: AppHandle, root: String, on_event: Channel<UiEvent>) -> Result<()> {
+    let state = app.state::<AppState>();
+    let index = project_or_scan(&state, &root).await?.index.clone();
+    let mut tasks = state.brief_tasks.lock().expect("task lock");
+    if tasks.get(&root).is_some_and(|task| !task.inner().is_finished()) {
+        return Ok(());
+    }
+    events::brief_status(&app, &root, BriefState::Building, None);
     let task_app = app.clone();
+    let task_root = root.clone();
 
     let task = tauri::async_runtime::spawn(async move {
-        let result = async {
+        let result: Result<StoredBrief> = async {
             let settings = task_app.state::<AppState>().settings();
             let provider = provider::resolve(&task_app, Tier::Deep).await?;
             let slices = explore::slices(&index, settings.effective_brief_agents());
@@ -213,18 +261,29 @@ pub async fn build_brief(app: AppHandle, on_event: Channel<UiEvent>) -> Result<(
                 created_at: SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs()),
                 source: explore::brief_source(&settings.provider.label(), agents),
             };
-            let state = task_app.state::<AppState>();
-            state.briefs.save(&brief)?;
-            // Only adopt it if the user hasn't switched projects meanwhile.
-            if state.project().is_some_and(|p| p.root == index.root) {
-                *state.brief.write().expect("brief lock") = Some(brief.clone());
-            }
-            Ok(brief.text)
+            task_app.state::<AppState>().briefs.save(&brief)?;
+            Ok(brief)
         }
         .await;
-        finish(&on_event, result);
+        let state = task_app.state::<AppState>();
+        match result {
+            Ok(brief) => {
+                // Rescan, so every tab of the project gets the new brief and
+                // the files changed while it was written.
+                if load_project(&state, index.root.clone()).await.is_err() {
+                    let entry = ProjectEntry { index: index.clone(), brief: Some(brief.clone()) };
+                    state.projects.write().expect("projects lock").insert(task_root.clone(), Arc::new(entry));
+                }
+                events::brief_status(&task_app, &task_root, BriefState::Done, None);
+                send(&on_event, UiEvent::Done { text: brief.text, partial: false });
+            }
+            Err(e) => {
+                events::brief_status(&task_app, &task_root, BriefState::Error, Some(e.to_string()));
+                send(&on_event, UiEvent::Error { message: e.to_string() });
+            }
+        }
     });
-    replace_task(&state.brief_task, task);
+    tasks.insert(root, task);
     Ok(())
 }
 
@@ -254,24 +313,57 @@ pub fn restore_starter_templates(state: State<'_, AppState>) -> Result<Vec<Templ
 
 // ---------- live analysis ----------
 
+/// Every tab or window id from the webview passes this before it is used: a
+/// tab id becomes a file name.
+fn check_id(id: &str) -> Result<()> {
+    if valid_id(id) {
+        Ok(())
+    } else {
+        Err(Error::Precondition("Unknown tab.".into()))
+    }
+}
+
+/// A notice about this run's notes: shown now, and saved with them.
+fn note(ch: &Channel<UiEvent>, recorder: &Mutex<Recorder<'_>>, message: String) {
+    let _ = recorder.lock().expect("recorder lock").notice(&message); // saving never fails a run
+    send(ch, UiEvent::Notice { message });
+}
+
+/// One run for one tab. A new run for a tab aborts only that tab's previous
+/// run, so tabs analyse in parallel. The notes are saved to the tab's history
+/// before `done` is sent, so a `get_tab` right after `done` includes them.
 #[tauri::command]
 pub async fn analyze(
     app: AppHandle,
+    tab_id: String,
     draft: String,
     previous_draft: Option<String>,
     instructions: String,
+    context: String,
     on_event: Channel<UiEvent>,
 ) -> Result<()> {
+    check_id(&tab_id)?;
+    // A closed or unknown tab can't analyse. Its project is read once, as the run starts.
+    let root = app.state::<AppState>().sessions.open_tab_root(&tab_id)?;
     let task_app = app.clone();
+    let task_tab = tab_id.clone();
     let task = tauri::async_runtime::spawn(async move {
         let state = task_app.state::<AppState>();
         let settings = state.settings();
-        let index = state.project();
+        // A project no window has loaded yet is scanned now. One that can't be
+        // read analyses without code context, like a tab with no project.
+        let entry = match root.as_deref() {
+            Some(root) => project_or_scan(&state, root).await.ok(),
+            None => None,
+        };
+        let (index, brief) = match &entry {
+            Some(entry) => (Some(entry.index.clone()), entry.brief.as_ref().map(|b| b.text.clone())),
+            None => (None, None),
+        };
         let provider = match provider::resolve(&task_app, Tier::Fast).await {
             Ok(provider) => provider,
             Err(e) => return send(&on_event, UiEvent::Error { message: e.to_string() }),
         };
-        let brief = state.brief.read().expect("brief lock").as_ref().map(|b| b.text.clone());
         let budget = provider.context_budget_chars();
         let max_files = if budget < 40_000 { 3 } else { 5 };
 
@@ -293,8 +385,11 @@ pub async fn analyze(
         .await;
         let PreOutcome::Analyze { snippets, notice } = pre else { return send(&on_event, UiEvent::Skipped) };
         send(&on_event, UiEvent::Started);
+        // This run's snapshot, saved at `done`. Checks that arrive first are
+        // kept until then; later checks and notices update the saved snapshot.
+        let recorder = Mutex::new(Recorder::new(&state.sessions, &task_tab, &draft, &context));
         if let Some(message) = notice {
-            send(&on_event, UiEvent::Notice { message });
+            note(&on_event, &recorder, message);
         }
 
         // Each lane writes some of the sections; up to one agent per section.
@@ -327,7 +422,12 @@ pub async fn analyze(
                 Ok((text, notice)) => {
                     let partial = notice.is_some();
                     if let Some(message) = notice {
-                        send(&on_event, UiEvent::Notice { message });
+                        note(&on_event, &recorder, message);
+                    }
+                    // Saved before `done`, so a `get_tab` right after `done` includes it.
+                    let saved = recorder.lock().expect("recorder lock").done(&text, partial);
+                    if let Err(e) = saved {
+                        send(&on_event, UiEvent::Notice { message: format!("Couldn't save these notes: {e}") });
                     }
                     send(&on_event, UiEvent::Done { text, partial });
                 }
@@ -336,7 +436,7 @@ pub async fn analyze(
         };
         // "Checked in code" starts as soon as the Faults lane finishes, while
         // other lanes may still stream; `done` never waits for it. The next
-        // analysis aborts this task, lanes and checks included.
+        // analysis of this tab aborts this task, lanes and checks included.
         let check = async {
             let Ok(text) = faults_rx.await else { return }; // that lane failed
             if !settings.jev_check_enabled() {
@@ -344,20 +444,24 @@ pub async fn analyze(
             }
             let (Some(index), Some(jev)) = (index.as_deref(), jev.as_ref()) else { return };
             if let Some(faults) = prompt::section_body(&text, "Faults") {
-                check::run(jev, index, &faults, |ev| send(&on_event, ev.into())).await;
+                check::run(jev, index, &faults, |ev| {
+                    let _ = recorder.lock().expect("recorder lock").check(&ev); // saving never fails a run
+                    send(&on_event, ev.into());
+                })
+                .await;
             }
         };
         tokio::join!(write, check);
     });
-    replace_task(&app.state::<AppState>().analysis, task);
+    replace_task(&app.state::<AppState>().analyses, &tab_id, task);
     Ok(())
 }
 
 #[tauri::command]
-pub fn cancel_analysis(state: State<'_, AppState>) {
-    if let Some(task) = state.analysis.lock().expect("task lock").take() {
-        task.abort(); // drops the Claude CLI child too (kill_on_drop)
-    }
+pub fn cancel_analysis(state: State<'_, AppState>, tab_id: String) -> Result<()> {
+    check_id(&tab_id)?;
+    cancel_task(&state.analyses, &tab_id); // drops the Claude CLI children too (kill_on_drop)
+    Ok(())
 }
 
 // ---------- local models ----------
