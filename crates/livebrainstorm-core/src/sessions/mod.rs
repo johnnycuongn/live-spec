@@ -187,14 +187,14 @@ impl Workspace {
             }
         }
         let highest = self.windows.iter().filter_map(|w| w.id.strip_prefix("w-")?.parse::<u64>().ok()).max().unwrap_or(0);
-        self.next_window = self.next_window.max(highest + 1);
+        self.next_window = self.next_window.max(highest.saturating_add(1));
         self
     }
 
     /// Adds an empty window, `w-<next_window>`, and returns its id.
     pub fn push_window(&mut self) -> String {
         let id = window_id(self.next_window);
-        self.next_window += 1;
+        self.next_window = self.next_window.saturating_add(1);
         self.windows.push(WindowEntry { id: id.clone(), tabs: Vec::new(), active: None });
         id
     }
@@ -330,6 +330,17 @@ mod tests {
             .collect();
         assert_eq!(windows, [("w-1", vec!["t-1", "t-2"], Some("t-1")), ("w-4", vec![], None)]);
         assert_eq!(ws.next_window, 5, "a window id is never reused");
+    }
+
+    #[test]
+    fn a_window_id_at_the_top_of_the_range_cannot_overflow() {
+        let ws: Workspace = serde_json::from_str(
+            r#"{"version":1,"nextWindow":1,"windows":[{"id":"w-18446744073709551615","tabs":[],"active":null}]}"#,
+        )
+        .unwrap();
+        let mut ws = ws.sanitized();
+        assert_eq!(ws.next_window, u64::MAX);
+        ws.push_window(); // must not panic either
     }
 
     #[test]

@@ -213,22 +213,28 @@ impl SessionStore {
 
     /// Closes a tab: its window drops it (the next tab becomes active) and its
     /// file gets `closed_at`, so it shows under Recently closed. Returns the
-    /// window it was in, or `None` if it was already closed.
+    /// window it was in, or `None` if it was already closed. A tab its window
+    /// lists but whose file is lost or damaged is dropped from the window all
+    /// the same, so it can't stay listed forever.
     pub fn close_tab(&self, id: &str) -> Result<Option<String>> {
         validate(id)?;
         let mut guard = self.lock();
         let inner = &mut *guard;
-        let mut tab = self.existing_tab(inner, id)?;
         let mut ws = self.read_ws(inner)?;
-        let Some(window) = ws.window_of(id).map(str::to_owned) else { return Ok(None) };
+        let Some(window) = ws.window_of(id).map(str::to_owned) else {
+            self.existing_tab(inner, id)?;
+            return Ok(None);
+        };
         if let Some(entry) = ws.window_mut(&window) {
             entry.remove_tab(id);
         }
         // The workspace first: if the app stops before the tab file is written,
         // the tab is still closed (no window lists it) and sorts by its last edit.
         self.put_ws(inner, ws)?;
-        tab.closed_at = Some(self.now_secs());
-        self.put_tab(inner, tab)?;
+        if let Some(mut tab) = self.read_tab_logged(inner, id) {
+            tab.closed_at = Some(self.now_secs());
+            self.put_tab(inner, tab)?;
+        }
         Ok(Some(window))
     }
 
@@ -339,7 +345,7 @@ impl SessionStore {
         if ws.window_mut(window).is_none() {
             return Err(window_closed());
         }
-        let mut imported = Vec::new();
+        let mut imported: Vec<String> = Vec::new();
         let mut active = None;
         for legacy in drafts {
             if legacy.draft.trim().is_empty() {
@@ -349,8 +355,17 @@ impl SessionStore {
             if active.is_none() && tab.root == active_root {
                 active = Some(tab.id.clone());
             }
-            imported.push(tab.id.clone());
-            self.put_tab(inner, tab)?;
+            let id = tab.id.clone();
+            if let Err(e) = self.put_tab(inner, tab) {
+                // All or nothing: a retry (the workspace is still fresh) would
+                // otherwise import these again.
+                for done in &imported {
+                    let _ = std::fs::remove_file(self.tab_path(done));
+                    inner.tabs.remove(done);
+                }
+                return Err(e);
+            }
+            imported.push(id);
         }
         let entry = ws.window_mut(window).ok_or_else(window_closed)?;
         if let Some(first) = imported.first() {
@@ -818,6 +833,30 @@ mod tests {
     }
 
     #[test]
+    fn closing_a_listed_tab_whose_file_is_lost_drops_it_from_the_window() {
+        let (dir, s) = store();
+        let a = s.create_tab("w-1", None).unwrap();
+        let ghost = s.create_tab("w-1", None).unwrap();
+        let c = s.create_tab("w-1", None).unwrap(); // active
+        s.activate("w-1", &ghost.id).unwrap();
+        drop(s);
+        let tabs = sessions(&dir).join("tabs");
+        std::fs::write(tabs.join(format!("{}.json", ghost.id)), "garbage").unwrap();
+        let s = at(&dir);
+        let view = s.window_view("w-1").unwrap();
+        assert_eq!(ids(&view.tabs), [a.id.as_str(), c.id.as_str()]);
+        assert!(view.active.is_none(), "the active tab is the damaged one");
+        assert_eq!(s.close_tab(&ghost.id).unwrap(), Some("w-1".to_owned()), "no file is needed to close it");
+        assert_eq!(s.window_of(&ghost.id), None);
+        let view = s.window_view("w-1").unwrap();
+        assert_eq!(ids(&view.tabs), [a.id.as_str(), c.id.as_str()]);
+        assert_eq!(view.active.map(|t| t.id), Some(c.id.clone()), "the tab that took its place");
+        s.delete_tab(&ghost.id).unwrap(); // nothing left on disk to delete: fine
+        // A tab that was closed for real and whose file is gone still reports it.
+        assert_eq!(s.close_tab(&ghost.id).unwrap_err().to_string(), "This tab was closed.");
+    }
+
+    #[test]
     fn a_tab_file_that_cannot_be_read_is_reported_and_left_alone() {
         let (dir, s) = store();
         let tab = s.create_tab("w-1", None).unwrap();
@@ -1002,6 +1041,31 @@ mod tests {
         s.import_legacy("w-1", vec![LegacyDraft { root: None, draft: "again".into() }], None).unwrap();
         assert_eq!(s.window_view("w-1").unwrap().tabs.len(), 2, "a second import does nothing");
         assert!(!at(&dir).window_view("w-1").unwrap().fresh, "nor does the next launch offer one");
+    }
+
+    #[test]
+    fn a_failed_legacy_import_leaves_nothing_behind_and_can_be_retried() {
+        let (dir, s) = store();
+        let drafts = || {
+            vec![
+                LegacyDraft { root: None, draft: "one".into() },
+                LegacyDraft { root: None, draft: "two".into() },
+                LegacyDraft { root: None, draft: "three".into() },
+            ]
+        };
+        // The second tab's id is known from the clock; a directory where its
+        // temp file goes makes writing it fail.
+        let blocked = sessions(&dir).join("tabs").join(format!("{}.json.tmp", tab_id(1_760_400_001_000, 2)));
+        std::fs::create_dir_all(&blocked).unwrap();
+        assert!(s.import_legacy("w-1", drafts(), None).is_err());
+        let files = || std::fs::read_dir(sessions(&dir).join("tabs")).unwrap().flatten().count();
+        assert_eq!(files(), 1, "only the blocking directory is left");
+        assert!(s.window_view("w-1").unwrap().fresh, "still a first run");
+        std::fs::remove_dir(&blocked).unwrap();
+        s.import_legacy("w-1", drafts(), None).unwrap();
+        let view = s.window_view("w-1").unwrap();
+        assert_eq!(view.tabs.len(), 3, "the retry imports each draft once");
+        assert!(view.closed.is_empty(), "no orphan from the failed try");
     }
 
     #[test]
