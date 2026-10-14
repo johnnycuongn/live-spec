@@ -194,6 +194,26 @@ export interface LocalStatus {
   downloading: string[];
 }
 
+/** What a model call was for (`usage::UsageKind`). */
+export type UsageKind = "notes" | "brief";
+
+/** One hour of one project's usage for one kind and model (`usage::UsageBucket`). `hour` is unix seconds / 3600, UTC. */
+export interface UsageBucket {
+  hour: number;
+  root: string | null;
+  kind: UsageKind;
+  model: string;
+  input: number;
+  cacheWrite: number;
+  cacheRead: number;
+  output: number;
+  costUsd: number;
+  runs: number;
+  estimatedRuns: number;
+  estimatedCostUsd: number;
+  unpricedRuns: number;
+}
+
 /** Each streaming call gets its own Channel, so events never cross requests. */
 function stream(cmd: string, args: Record<string, unknown>, onEvent: (e: UiEvent) => void): Promise<void> {
   const channel = new Channel<UiEvent>();
