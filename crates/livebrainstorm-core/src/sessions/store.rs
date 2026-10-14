@@ -241,10 +241,19 @@ impl SessionStore {
     /// Closes every tab of `window` (they show under Recently closed) and
     /// removes the window. Returns the ids of the tabs it closed.
     pub fn close_window(&self, window: &str) -> Result<Vec<String>> {
+        Ok(self.close_window_inner(window, false)?.unwrap_or_default())
+    }
+
+    /// `keep_last`: leave `window` alone (`None`) when no other window is listed. The check
+    /// and the close share one lock, so two closes at once can't both see the other window.
+    fn close_window_inner(&self, window: &str, keep_last: bool) -> Result<Option<Vec<String>>> {
         validate(window)?;
         let mut guard = self.lock();
         let inner = &mut *guard;
         let mut ws = self.read_ws(inner)?;
+        if keep_last && !ws.windows.iter().any(|w| w.id != window) {
+            return Ok(None);
+        }
         let pos = ws.windows.iter().position(|w| w.id == window).ok_or_else(window_closed)?;
         let entry = ws.windows.remove(pos);
         self.put_ws(inner, ws)?;
@@ -257,7 +266,13 @@ impl SessionStore {
                 eprintln!("LiveBrainstorm: couldn't mark tab {id} closed: {e}");
             }
         }
-        Ok(entry.tabs)
+        Ok(Some(entry.tabs))
+    }
+
+    /// `close_window`, unless `window` is the only window: then nothing changes (`None`).
+    /// One lock covers the decision and the close.
+    pub(super) fn close_window_if_another(&self, window: &str) -> Result<Option<Vec<String>>> {
+        self.close_window_inner(window, true)
     }
 
     /// Puts a closed tab back, at the end of `window`, as its active tab.
@@ -618,6 +633,11 @@ fn tab_closed() -> Error {
 
 fn window_closed() -> Error {
     Error::Precondition("This window was closed.".into())
+}
+
+/// Whether `e` is the "window is not in the workspace" precondition.
+pub(super) fn is_window_closed(e: &Error) -> bool {
+    matches!((e, window_closed()), (Error::Precondition(a), Error::Precondition(b)) if *a == b)
 }
 
 fn open_elsewhere() -> Error {

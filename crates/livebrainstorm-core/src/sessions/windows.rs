@@ -3,6 +3,7 @@
 
 use serde::Serialize;
 
+use super::store::is_window_closed;
 use super::{SessionStore, TabSummary};
 use crate::Result;
 
@@ -32,17 +33,18 @@ impl SessionStore {
     /// Decided from the workspace, not Tauri's window list, which still lists a window
     /// that is closing.
     pub fn close_window_unless_last(&self, window: &str) -> Result<Option<Vec<String>>> {
-        if !self.window_ids().iter().any(|w| w != window) {
-            return Ok(None);
-        }
-        self.close_window(window).map(Some)
+        self.close_window_if_another(window)
     }
 
     /// Every window with its active tab, in workspace order.
     pub fn windows(&self) -> Result<Vec<WindowSummary>> {
         let mut out = Vec::new();
         for id in self.window_ids() {
-            let view = self.window_view(&id)?;
+            // A window that closed since `window_ids()` is just gone from the list.
+            let view = match self.window_view(&id) {
+                Err(e) if is_window_closed(&e) => continue,
+                other => other?,
+            };
             let active_id = view.active.map(|tab| tab.id);
             let active = view.tabs.iter().find(|t| Some(&t.id) == active_id.as_ref()).cloned();
             out.push(WindowSummary { tabs: view.tabs.len(), active, id });
@@ -74,6 +76,38 @@ mod tests {
         assert_eq!(s.window_ids(), [w1.as_str()]);
         assert_eq!(ids(&s.window_view(&w1).unwrap().tabs), [tab.id.as_str()]);
         assert!(s.closed().is_empty(), "nothing goes to Recently closed");
+    }
+
+    #[test]
+    fn two_windows_closing_at_once_leave_one() {
+        // A rollback `close_window` on another thread must not be able to take the
+        // other window's partner with it: the decision and the close are atomic.
+        for _ in 0..200 {
+            let (_dir, s) = store();
+            let w1 = s.window_ids()[0].clone();
+            let w2 = s.add_window().unwrap();
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                for w in [&w1, &w2] {
+                    let (s, barrier) = (&s, &barrier);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        s.close_window_unless_last(w).unwrap();
+                    });
+                }
+            });
+            assert_eq!(s.window_ids().len(), 1, "the workspace never ends with zero windows");
+        }
+    }
+
+    #[test]
+    fn a_window_closed_meanwhile_is_skipped_by_the_list() {
+        let (_dir, s) = store();
+        let w2 = s.add_window().unwrap();
+        s.close_window(&w2).unwrap();
+        assert!(is_window_closed(&s.window_view(&w2).unwrap_err()));
+        assert!(!is_window_closed(&s.window_view("../x").unwrap_err()));
+        assert_eq!(s.windows().unwrap().len(), 1);
     }
 
     #[test]
