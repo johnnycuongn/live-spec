@@ -86,6 +86,7 @@ Brief building (`build_brief`, `Tier::Deep`) and downloads (`install_runtime`, `
 - Evidence matching is by whole identifiers and whole path segments; a name found in more than `min(8, files/4)` files (at least 2) is too generic to check.
 - **Gate and rerank** (`jev::gate`, `jev::rerank`, `analysis::pre_phase`): the UI sends the draft of the last *completed* analysis as `previousDraft` (skips never move it; "Try again" sends null). Gate errors mean "analyse"; rerank errors mean keyword order. Neither ever adds more than `PRE_BUDGET` before the model call. Futures awaited inside the shell's spawned task must avoid closures over borrowed arguments (`Option::filter(|_| …)`, `.map(|(i, &x)| …)`): they trip rustc's Send check ("FnOnce is not general enough").
 - `Settings::jev_allowed()` is false for the Local provider; `jev_gate_enabled`, `jev_rerank_enabled` and `jev_check_enabled` all respect it.
+- Parallel-notes live test (runs Claude Code, uses the subscription; prints 1-lane vs 4-lane timings per lane): `cargo test -p livebrainstorm-core --test notes_live -- --ignored --nocapture`. Phase 3 measured 4 lanes *slower* than 1 with the Claude CLI (per-call overhead dominates); see the spec's measurements.
 - Jev failures never fail an analysis; they surface as one `notice` event. The client retries 429/503/529 twice.
 - Live test against the real API (needs the key; prints latency): `cargo test -p livebrainstorm-core --test jev_live -- --ignored --nocapture`.
 

@@ -331,3 +331,19 @@ AGENTS.md (the agents module, Jev, key lookup and the `VITE_` warning, new event
 - `PRE_BUDGET`: kept at 1,500 ms by the plan's rule (no round timed out). But the slowest analysed round finished within 30 ms of the budget, because the 20 rerank requests run in 3 waves of 8. If timeouts show up in use, the cheaper fix is a shorter shortlist or higher rerank concurrency, not a longer budget.
 - One failed request out of 20 discards the whole ranking (by design). With TypeSafe's intermittent 503s that happened in 1 of 3 rounds; the fallback worked as intended.
 - **After the review fix** (rerank shortlist sent at once instead of in waves of 8), same test: adds an idea 979 / 960 / 359 ms, analysed with reranked code and no notices; rewords only 308 / 379 / 386 ms, SKIP. Normal analysed pauses now finish well inside `PRE_BUDGET`.
+
+## Measurements (phase 3, 2026-10-14)
+
+`cargo test -p livebrainstorm-core --test notes_live -- --ignored --nocapture`, Claude Code `haiku` via the subscription, this repo, keyword snippets. Two runs of the test, each alternating 1, 4, 1, 4 lanes:
+
+| Lanes | First text (ms) | Complete notes (ms) | Missing sections |
+|---|---|---|---|
+| 1 | 3,309; 3,048; 9,766; 3,146 | 7,408; 7,085; 12,567; 6,983 | none |
+| 4 | 3,880; 4,103; 4,868; 5,259 | 11,089; 10,757; 8,853; 13,946 | none |
+
+Per lane, second run: one section (≈ 370–680 chars) took 6.6–14 s; the single four-section call (≈ 1,500–1,600 chars) took 7–12.6 s.
+
+- **The success criterion "with 4 agents, complete notes arrive sooner than with 1" is not met with the Claude subscription.** The median is ≈ 11 s for 4 lanes against ≈ 7.2 s for 1, and 4 lanes cost 4 `claude` processes per pause.
+- Why: each call's time is dominated by fixed per-call cost (spawning `claude -p`, reading the ≈ 30k-char project context), not by output length. Splitting the output buys almost nothing, and 4 concurrent calls finish when the slowest of 4 variable latencies does.
+- Not measured: the Anthropic API provider (no process spawn) and local models (always 1 lane).
+- Implication for phase 4: the brief's explorers do far more work per agent (tool turns over the repo), so parallelism there is more likely to pay off. Measure before assuming.
