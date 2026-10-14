@@ -109,6 +109,65 @@ export interface ProjectSummary {
   brief: StoredBrief | null;
 }
 
+/** One saved analysis (`sessions::Snapshot`). `at` is unix seconds; `context` is the run's `analysisContextKey`. */
+export interface Snapshot {
+  id: number;
+  at: number;
+  draft: string;
+  context: string;
+  markdown: string;
+  partial: boolean;
+  notices: string[];
+  checks: CheckResult[];
+  /** The claim count from the last `checking` event. Fewer checks, without `checksStopped`, means an edit cut the run off. */
+  checksTotal: number | null;
+  /** The Faults count from the same event (`total`); null in files saved before it existed. */
+  checksFaults: number | null;
+  checksStopped: boolean;
+}
+
+/** One tab (`sessions::Tab`): its draft and its last analyses, newest first (at most 5). */
+export interface Tab {
+  id: string;
+  root: string | null;
+  title: string | null;
+  createdAt: number;
+  updatedAt: number;
+  closedAt: number | null;
+  draft: string;
+  nextSnapshot: number;
+  history: Snapshot[];
+}
+
+/** What lists show (`sessions::TabSummary`): no draft body or history. */
+export interface TabSummary {
+  id: string;
+  root: string | null;
+  title: string | null;
+  /** The draft's first non-empty line, at most 48 characters (`firstLine` in tabTitle.ts). */
+  firstLine: string;
+  updatedAt: number;
+  closedAt: number | null;
+}
+
+/** One window's tabs, its full active tab, and the shared closed list (`sessions::WindowView`). */
+export interface WindowView {
+  window: string;
+  tabs: TabSummary[];
+  active: Tab | null;
+  closed: TabSummary[];
+  /** The first launch of this build: import the old localStorage drafts. */
+  fresh: boolean;
+  /** Files kept as `.bad` since the app started. */
+  unreadable: string[];
+}
+
+/** A draft the old build kept in localStorage (`sessions::LegacyDraft`). */
+export interface LegacyDraft {
+  root: string | null;
+  draft: string;
+}
+
 export interface LocalModel {
   id: string;
   name: string;
@@ -146,6 +205,7 @@ export const api = {
   warmUp: () => invoke<void>("warm_up"),
 
   openProject: (path: string) => invoke<ProjectSummary>("open_project", { path }),
+  projectSummary: (root: string) => invoke<ProjectSummary>("project_summary", { root }),
   getInstructions: (root: string) => invoke<InstructionsView>("get_instructions", { root }),
   saveProjectInstructions: (root: string, instructions: ProjectInstructions) =>
     invoke<void>("save_project_instructions", { root, instructions }),
@@ -156,6 +216,18 @@ export const api = {
   analyze: (draft: string, previousDraft: string | null, instructions: string, onEvent: (e: UiEvent) => void) =>
     stream("analyze", { draft, previousDraft, instructions }, onEvent),
   cancelAnalysis: () => invoke<void>("cancel_analysis"),
+
+  listWorkspace: (window: string) => invoke<WindowView>("list_workspace", { window }),
+  getTab: (tabId: string) => invoke<Tab>("get_tab", { tabId }),
+  createTab: (window: string, root: string | null) => invoke<Tab>("create_tab", { window, root }),
+  saveDraft: (tabId: string, draft: string) => invoke<void>("save_draft", { tabId, draft }),
+  renameTab: (tabId: string, title: string | null) => invoke<void>("rename_tab", { tabId, title }),
+  activateTab: (window: string, tabId: string) => invoke<void>("activate_tab", { window, tabId }),
+  closeTab: (tabId: string) => invoke<void>("close_tab", { tabId }),
+  reopenTab: (tabId: string, window: string) => invoke<void>("reopen_tab", { tabId, window }),
+  deleteTab: (tabId: string) => invoke<void>("delete_tab", { tabId }),
+  importLegacyDrafts: (window: string, drafts: LegacyDraft[], activeRoot: string | null) =>
+    invoke<void>("import_legacy_drafts", { window, drafts, activeRoot }),
 
   localStatus: () => invoke<LocalStatus>("local_inventory"),
   installRuntime: (onEvent: (e: UiEvent) => void) => stream("install_runtime", {}, onEvent),
