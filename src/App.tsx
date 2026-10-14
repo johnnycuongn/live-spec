@@ -1,13 +1,16 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, errorMessage, type ProjectSummary, type Settings } from "./lib/ipc";
+import { api, errorMessage, type InstructionsView, type ProjectInstructions, type ProjectSummary, type Settings, type Template } from "./lib/ipc";
 import { useLiveAnalysis } from "./lib/useLiveAnalysis";
-import { providerLabel } from "./lib/providerOptions";
 import { activityLine } from "./lib/brief";
+import { providerLabel } from "./lib/providerOptions";
+import { EMPTY_INSTRUCTIONS, analysisContextKey, instructionsLabel } from "./lib/instructions";
+import { createSaver } from "./lib/saver";
 import { TopBar } from "./components/TopBar";
 import { DraftPane } from "./components/DraftPane";
 import { NotesPane } from "./components/NotesPane";
 import { BriefDrawer } from "./components/BriefDrawer";
+import { InstructionsDrawer } from "./components/InstructionsDrawer";
 import { SettingsDialog } from "./components/SettingsDialog";
 
 const LAST_PROJECT = "livebrainstorm.lastProject";
@@ -20,6 +23,13 @@ export default function App() {
   const [projectError, setProjectError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
 
+  const [instructions, setInstructions] = useState<ProjectInstructions>(EMPTY_INSTRUCTIONS);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [instructionsError, setInstructionsError] = useState<string | null>(null);
+  const [showInstructions, setShowInstructions] = useState(false);
+  // Which project's instructions are on screen: null until one opens.
+  const openRoot = useRef<string | null>(null);
+
   const [briefBuilding, setBriefBuilding] = useState(false);
   const [briefLive, setBriefLive] = useState("");
   const [briefActivity, setBriefActivity] = useState<string[]>([]);
@@ -27,31 +37,69 @@ export default function App() {
   const [showBrief, setShowBrief] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
 
+  // Edits save a moment after typing stops, each under the project it was typed in.
+  const saver = useMemo(
+    () =>
+      createSaver<ProjectInstructions>(api.saveProjectInstructions, 500, (e) =>
+        setInstructionsError(`Couldn't save instructions: ${errorMessage(e)}`),
+      ),
+    [],
+  );
+  useEffect(() => () => void saver.flush(), [saver]);
+
   // Opening (or re-opening) a project rescans it, so its summary is the
   // single source of truth for the brief and whether it's stale.
   const brief = project?.brief ?? null;
   const briefStatus = project?.briefStatus ?? null;
-  const analysis = useLiveAnalysis(draft, settings?.debounceMs ?? 1200, `${project?.root ?? ""}|${brief?.createdAt ?? 0}`, "");
+  // Changing the instructions re-reads the same draft, like a new project or brief.
+  const analysis = useLiveAnalysis(
+    draft,
+    settings?.debounceMs ?? 1200,
+    analysisContextKey(project?.root, brief?.createdAt, instructions.current),
+    instructions.current,
+  );
 
-  const loadProject = useCallback(async (path: string) => {
-    setOpening(true);
-    setProjectError(null);
-    try {
-      const summary = await api.openProject(path);
-      setProject(summary);
-      setBriefError(null);
-      setDraft(localStorage.getItem(draftKey(summary.root)) ?? "");
-      localStorage.setItem(LAST_PROJECT, summary.root);
-    } catch (e) {
-      setProjectError(errorMessage(e));
-    } finally {
-      setOpening(false);
-    }
-  }, []);
+  const showView = (view: InstructionsView) => {
+    setInstructions(view.project);
+    setTemplates(view.templates);
+    setInstructionsError(null);
+  };
+
+  const loadProject = useCallback(
+    async (path: string) => {
+      setOpening(true);
+      setProjectError(null);
+      await saver.flush(); // a pending edit belongs to the project it was typed in
+      try {
+        const summary = await api.openProject(path);
+        // Fetched before any state changes, so the project and its instructions
+        // land in one render and the first analysis already has them.
+        const view = await api.getInstructions(summary.root);
+        openRoot.current = summary.root;
+        setProject(summary);
+        showView(view);
+        setBriefError(null);
+        setDraft(localStorage.getItem(draftKey(summary.root)) ?? "");
+        localStorage.setItem(LAST_PROJECT, summary.root);
+      } catch (e) {
+        setProjectError(errorMessage(e));
+      } finally {
+        setOpening(false);
+      }
+    },
+    [saver],
+  );
 
   useEffect(() => {
     api.getSettings().then(setSettings);
     void api.warmUp();
+    // Templates are shared, so load them even if the last project fails to
+    // open (a template save writes the whole list). The no-project
+    // instructions apply until a project opens.
+    void api.getInstructions("").then((view) => {
+      setTemplates(view.templates);
+      if (openRoot.current === null) setInstructions(view.project);
+    });
     const last = localStorage.getItem(LAST_PROJECT);
     if (last) void loadProject(last);
     else setDraft(localStorage.getItem(draftKey(undefined)) ?? "");
@@ -62,10 +110,13 @@ export default function App() {
     localStorage.setItem(draftKey(project?.root), draft);
   }, [draft, project?.root]);
 
-  // Esc closes the brief drawer. The settings <dialog> handles its own Esc.
+  // Esc closes either drawer. The settings <dialog> handles its own Esc.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !showSettings) setShowBrief(false);
+      if (e.key === "Escape" && !showSettings) {
+        setShowBrief(false);
+        setShowInstructions(false);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -76,7 +127,14 @@ export default function App() {
     if (typeof dir === "string") await loadProject(dir);
   };
 
+  const changeInstructions = (next: ProjectInstructions) => {
+    setInstructions(next);
+    setInstructionsError(null);
+    saver.schedule(project?.root ?? "", next);
+  };
+
   const buildBrief = () => {
+    setShowInstructions(false);
     setShowBrief(true);
     setBriefBuilding(true);
     setBriefLive("");
@@ -114,8 +172,16 @@ export default function App() {
         briefStatus={briefStatus}
         briefBuilding={briefBuilding}
         providerLabel={providerLabel(settings)}
+        instructionsLabel={instructionsLabel(instructions, templates)}
         onOpenProject={pickProject}
-        onShowBrief={() => setShowBrief((v) => !v)}
+        onShowBrief={() => {
+          setShowInstructions(false);
+          setShowBrief((v) => !v);
+        }}
+        onShowInstructions={() => {
+          setShowBrief(false);
+          setShowInstructions((v) => !v);
+        }}
         onOpenSettings={() => setShowSettings(true)}
       />
       {projectError && (
@@ -138,6 +204,17 @@ export default function App() {
             error={briefError}
             onBuild={buildBrief}
             onClose={() => setShowBrief(false)}
+          />
+        )}
+        {showInstructions && (
+          <InstructionsDrawer
+            key={project?.root ?? ""}
+            instructions={instructions}
+            templates={templates}
+            localModel={settings?.provider.kind === "local"}
+            error={instructionsError}
+            onChange={changeInstructions}
+            onClose={() => setShowInstructions(false)}
           />
         )}
       </main>

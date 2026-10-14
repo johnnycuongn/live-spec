@@ -9,6 +9,8 @@ interface Props {
   providerLabel: string;
   onOpenProject: () => void;
   onShowBrief: () => void;
+  instructionsLabel: string;
+  onShowInstructions: () => void;
   onOpenSettings: () => void;
 }
 
@@ -43,6 +45,10 @@ export function TopBar(p: Props) {
           {p.briefBuilding ? "Building project brief…" : BRIEF_LABEL[p.briefStatus ?? "missing"]}
         </Button>
       )}
+
+      <Button variant="ghost" className="min-w-0" onClick={p.onShowInstructions} title="Session instructions">
+        <span className="max-w-64 truncate">Instructions: {p.instructionsLabel}</span>
+      </Button>
 
       <span className="flex-1" />
       <Button variant="ghost" onClick={p.onOpenSettings} title="Model and settings">
