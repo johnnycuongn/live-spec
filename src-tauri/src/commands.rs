@@ -187,7 +187,10 @@ async fn project_or_scan(state: &AppState, root: &str) -> Result<Arc<ProjectEntr
     if !Path::new(root).is_dir() {
         return Err(Error::Precondition("That folder no longer exists. Open it again from its new place.".into()));
     }
-    load_project(state, PathBuf::from(root)).await
+    let entry = load_project(state, PathBuf::from(root)).await?;
+    // A tab may have closed while this scanned: keep only roots an open tab uses.
+    state.evict_unused_projects();
+    Ok(entry)
 }
 
 /// "Open a project…", and explicit refreshes: always rescans.
@@ -274,6 +277,8 @@ pub async fn build_brief(app: AppHandle, root: String, on_event: Channel<UiEvent
                     let entry = ProjectEntry { index: index.clone(), brief: Some(brief.clone()) };
                     state.projects.write().expect("projects lock").insert(task_root.clone(), Arc::new(entry));
                 }
+                // The project's last tab may have closed while the brief was written.
+                state.evict_unused_projects();
                 events::brief_status(&task_app, &task_root, BriefState::Done, None);
                 send(&on_event, UiEvent::Done { text: brief.text, partial: false });
             }
@@ -558,7 +563,13 @@ pub async fn analyze(
         };
         tokio::join!(write, check);
     });
-    replace_task(&app.state::<AppState>().analyses, &tab_id, task);
+    let state = app.state::<AppState>();
+    replace_task(&state.analyses, &tab_id, task);
+    // The tab may have closed since the check above, after `close_tab` looked for
+    // a run to cancel: stop this one, so it records nothing into a closed tab.
+    if state.sessions.open_tab_root(&tab_id).is_err() {
+        cancel_task(&state.analyses, &tab_id);
+    }
     Ok(())
 }
 
