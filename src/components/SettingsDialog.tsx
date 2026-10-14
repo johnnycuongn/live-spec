@@ -10,7 +10,7 @@ import {
   type Settings,
 } from "../lib/ipc";
 import { formatBytes, pauseDownload, startDownload, useDownloads } from "../lib/downloads";
-import { agentHint, clampAgents, jevHint, jevUsable, keySourceLabel, PARALLEL_BRIEF_HINT, PARALLEL_NOTES_HINT } from "../lib/settingsHints";
+import { agentHint, clampAgents, clampedAgents, jevHint, jevUsable, keySourceLabel, PARALLEL_BRIEF_HINT, PARALLEL_NOTES_HINT } from "../lib/settingsHints";
 import { Button, Eyebrow, Field, Toggle, cx, inputClass } from "./ui";
 
 interface Props {
@@ -62,7 +62,7 @@ export function SettingsDialog({ settings, onSave, onClose }: Props) {
     setSaving(true);
     setError(null);
     try {
-      await onSave(draft);
+      await onSave({ ...draft, agents: clampedAgents(draft.agents) });
       onClose();
     } catch (e) {
       setError(errorMessage(e));
@@ -229,7 +229,7 @@ function ApiFields({ p, patch }: { p: Extract<ProviderSettings, { kind: "anthrop
             placeholder={hasKey ? "Paste a new key to replace it" : "sk-ant-…"}
             onChange={(e) => setKey(e.target.value)}
           />
-          <Button onClick={saveKey}>{key.trim() || !hasKey ? "Save key" : "Remove key"}</Button>
+          <Button className="shrink-0" onClick={saveKey}>{key.trim() || !hasKey ? "Save key" : "Remove key"}</Button>
         </div>
         {note && <small className="text-xs text-muted">{note}</small>}
       </Field>
@@ -341,16 +341,17 @@ function AgentFields({ settings, update }: { settings: Settings; update: (a: Par
   const a = settings.agents;
   const kind = settings.provider.kind;
   const local = kind === "local";
+  const shown = local ? 1 : clampAgents(a.maxAgents);
   return (
     <div className="grid gap-3">
-      <Field label={`Agents at once: ${local ? 1 : a.maxAgents}`}>
+      <Field label={`Agents at once: ${shown}`}>
         <input
           type="range"
           className="w-full accent-accent"
           min={1}
           max={8}
           step={1}
-          value={a.maxAgents}
+          value={shown}
           disabled={local}
           onChange={(e) => update({ maxAgents: clampAgents(Number(e.target.value)) })}
         />
@@ -409,7 +410,7 @@ function JevFields({ settings, update }: { settings: Settings; update: (j: Parti
             placeholder={inKeychain ? "Paste a new key to replace it" : "Paste a key from console.typesafe.ai/keys"}
             onChange={(e) => setKey(e.target.value)}
           />
-          <Button onClick={saveKey} disabled={!key.trim() && !inKeychain}>
+          <Button className="shrink-0" onClick={saveKey} disabled={!key.trim() && !inKeychain}>
             {key.trim() || !inKeychain ? "Save key" : "Remove key"}
           </Button>
         </div>

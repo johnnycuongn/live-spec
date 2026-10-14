@@ -1,9 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { agentHint, clampAgents, jevHint, jevUsable, keySourceLabel, PARALLEL_BRIEF_HINT, PARALLEL_NOTES_HINT } from "./settingsHints";
+import { agentHint, clampAgents, clampedAgents, jevHint, jevUsable, keySourceLabel, PARALLEL_BRIEF_HINT, PARALLEL_NOTES_HINT } from "./settingsHints";
 
 describe("agents", () => {
   it("clampAgents keeps 1..8", () => {
     expect([0, 1, 4, 8, 12, -3, 2.6, Number.NaN].map(clampAgents)).toEqual([1, 1, 4, 8, 8, 1, 3, 1]);
+  });
+
+  it("clampedAgents fixes a stored maxAgents before it is saved", () => {
+    const agents = { maxAgents: 12, parallelBrief: true, parallelNotes: false };
+    expect(clampedAgents(agents)).toEqual({ maxAgents: 8, parallelBrief: true, parallelNotes: false });
+    expect(clampedAgents({ ...agents, maxAgents: 0 }).maxAgents).toBe(1);
+    expect(clampedAgents({ ...agents, maxAgents: Number.NaN }).maxAgents).toBe(1);
   });
 
   it("explains what an agent costs per provider", () => {

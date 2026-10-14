@@ -1,7 +1,7 @@
 // Copy and rules for the Agents and Jev settings groups, kept pure so they're
 // testable. The Rust side enforces the same limits (Settings::max_agents
 // clamps to 1..=8; Jev never runs for the Local provider).
-import type { KeySource, ProviderSettings } from "./ipc";
+import type { AgentSettings, KeySource, ProviderSettings } from "./ipc";
 
 type Kind = ProviderSettings["kind"];
 
@@ -9,6 +9,9 @@ export const PARALLEL_NOTES_HINT = "Off by default: with Claude Code, four agent
 export const PARALLEL_BRIEF_HINT = "Off by default: on a typical repo, parallel explorers plus the merge took about 16% longer.";
 
 export const clampAgents = (n: number) => (Number.isFinite(n) ? Math.min(8, Math.max(1, Math.round(n))) : 1);
+
+/** A hand-edited settings.json can hold 0 or 12; never show or save it as-is. */
+export const clampedAgents = (a: AgentSettings): AgentSettings => ({ ...a, maxAgents: clampAgents(a.maxAgents) });
 
 const AGENT_HINT: Record<Kind, string> = {
   claudeCli: "Each agent is a separate claude process on your subscription.",
