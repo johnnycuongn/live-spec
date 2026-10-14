@@ -6,6 +6,7 @@
 //! the history is for the user to browse and is never sent to the model.
 
 mod ids;
+mod store;
 
 use std::collections::HashSet;
 
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::jev::check::{CheckEvent, CheckResult};
 
 pub use ids::{tab_id, valid_id, window_id};
+pub use store::SessionStore;
 
 /// Analyses kept per tab, newest first.
 pub const HISTORY_LEN: usize = 5;
