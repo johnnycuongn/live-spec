@@ -52,6 +52,18 @@ pub struct ChatRequest {
     pub max_turns: Option<u32>,
 }
 
+/// What one model call used, as the provider reported it. `cost_usd` is the
+/// call's list-price cost, or None when the price isn't known.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Usage {
+    pub model: String,
+    pub input: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub output: u64,
+    pub cost_usd: Option<f64>,
+}
+
 /// What a provider emits while streaming.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Chunk {
@@ -59,6 +71,10 @@ pub enum Chunk {
     Text(String),
     /// Side activity worth surfacing, e.g. "Read src/main.rs".
     Activity(String),
+    /// What the call used, once per model at the end of any call the provider
+    /// reports usage for (failed calls included). `usage::metered` records it;
+    /// it is never shown.
+    Usage(Usage),
 }
 
 pub type OnChunk<'a> = &'a mut (dyn FnMut(Chunk) + Send);
@@ -85,6 +101,16 @@ impl Provider {
         matches!(self, Provider::ClaudeCli(_))
     }
 
+    /// The model this provider was asked for: an alias ("haiku") or a model id
+    /// for Claude, a catalog id for local models. Usage estimates are priced by it.
+    pub fn model(&self) -> &str {
+        match self {
+            Provider::ClaudeCli(p) => &p.model,
+            Provider::AnthropicApi(p) => &p.model,
+            Provider::OpenAiCompat(p) => &p.model,
+        }
+    }
+
     /// Rough character budget for project context we inline into prompts.
     /// Local models get far less room than hosted Claude.
     pub fn context_budget_chars(&self) -> usize {
@@ -104,5 +130,25 @@ mod tests {
         let s = Secret::new("sk-ant-api03-abc");
         assert_eq!(format!("{s:?}"), "Secret(***)");
         assert_eq!(s.expose(), "sk-ant-api03-abc");
+    }
+
+    #[test]
+    fn model_is_what_the_provider_was_asked_for() {
+        let cli = Provider::ClaudeCli(ClaudeCli::new("claude".into(), "haiku", None));
+        assert_eq!(cli.model(), "haiku");
+        let api = Provider::AnthropicApi(AnthropicApi {
+            api_key: Secret::new("k"),
+            model: "claude-haiku-5-5".into(),
+            effort: None,
+            http: reqwest::Client::new(),
+        });
+        assert_eq!(api.model(), "claude-haiku-5-5");
+        let local = Provider::OpenAiCompat(OpenAiCompat {
+            base_url: "http://127.0.0.1:1".into(),
+            model: "qwen3-4b-instruct".into(),
+            context_tokens: 4096,
+            http: reqwest::Client::new(),
+        });
+        assert_eq!(local.model(), "qwen3-4b-instruct");
     }
 }

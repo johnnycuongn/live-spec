@@ -19,5 +19,6 @@ pub mod sessions;
 pub mod settings;
 pub mod shell_env;
 pub mod store;
+pub mod usage;
 
 pub use error::{Error, Result};

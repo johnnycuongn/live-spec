@@ -70,6 +70,8 @@ fn on_chunk(ch: &Channel<UiEvent>) -> impl FnMut(Chunk) + Send + '_ {
     move |c| match c {
         Chunk::Text(text) => send(ch, UiEvent::Text { text, lane: 0 }),
         Chunk::Activity(label) => send(ch, UiEvent::Activity { label, lane: 0 }),
+        // Recorded by `usage::metered`, never shown.
+        Chunk::Usage(_) => {}
     }
 }
 
@@ -596,6 +598,7 @@ pub async fn analyze(
                 let mut sink = |chunk: Chunk| match chunk {
                     Chunk::Text(text) => send(on_event, UiEvent::Text { text, lane }),
                     Chunk::Activity(label) => send(on_event, UiEvent::Activity { label, lane }),
+                    Chunk::Usage(_) => {}
                 };
                 let result = provider.stream(&req, &mut sink).await;
                 if let (Some(tx), Ok(text)) = (tx, &result) {
