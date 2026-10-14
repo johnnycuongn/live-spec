@@ -3,8 +3,9 @@
 
 use serde_json::{json, Value};
 
-use super::{sse, ChatRequest, Chunk, OnChunk, Secret};
+use super::{sse, ChatRequest, Chunk, OnChunk, Secret, Usage};
 use crate::settings::Effort;
+use crate::usage::price;
 use crate::{Error, Result};
 
 const ENDPOINT: &str = "https://api.anthropic.com/v1/messages";
@@ -35,6 +36,59 @@ fn body(model: &str, effort: Option<Effort>, req: &ChatRequest) -> Value {
     body
 }
 
+/// Usage spread over the stream: input and cache counts in `message_start`,
+/// the running output count in each `message_delta` (the last one is final).
+#[derive(Debug, Default)]
+struct UsageAcc {
+    model: Option<String>,
+    input: u64,
+    cache_write: u64,
+    cache_read: u64,
+    output: u64,
+    seen: bool,
+}
+
+impl UsageAcc {
+    fn observe(&mut self, v: &Value) {
+        let n = |x: &Value| x.as_u64().unwrap_or(0);
+        match v["type"].as_str() {
+            Some("message_start") => {
+                let (message, u) = (&v["message"], &v["message"]["usage"]);
+                self.model = message["model"].as_str().map(str::to_owned);
+                self.input = n(&u["input_tokens"]);
+                self.cache_write = n(&u["cache_creation_input_tokens"]);
+                self.cache_read = n(&u["cache_read_input_tokens"]);
+                self.output = n(&u["output_tokens"]);
+                self.seen = true;
+            }
+            Some("message_delta") => {
+                if let Some(output) = v["usage"]["output_tokens"].as_u64() {
+                    self.output = output;
+                    self.seen = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// None when the stream never reported usage. Priced from `usage::PRICES`.
+    fn usage(self, requested: &str) -> Option<Usage> {
+        if !self.seen {
+            return None;
+        }
+        let mut u = Usage {
+            model: self.model.unwrap_or_else(|| requested.to_owned()),
+            input: self.input,
+            cache_write: self.cache_write,
+            cache_read: self.cache_read,
+            output: self.output,
+            cost_usd: None,
+        };
+        u.cost_usd = price(&u.model).map(|p| p.cost(&u));
+        Some(u)
+    }
+}
+
 impl AnthropicApi {
     pub async fn stream(&self, req: &ChatRequest, on_chunk: OnChunk<'_>) -> Result<String> {
         let resp = self
@@ -48,8 +102,10 @@ impl AnthropicApi {
         let resp = sse::ensure_success(resp, "Anthropic API").await?;
 
         let mut full = String::new();
-        sse::for_each_data(resp, |data| {
+        let mut acc = UsageAcc::default();
+        let streamed = sse::for_each_data(resp, |data| {
             let v: Value = serde_json::from_str(data)?;
+            acc.observe(&v);
             match v["type"].as_str() {
                 Some("content_block_delta") if v["delta"]["type"] == "text_delta" => {
                     if let Some(t) = v["delta"]["text"].as_str() {
@@ -66,7 +122,12 @@ impl AnthropicApi {
                 _ => Ok(true),
             }
         })
-        .await?;
+        .await;
+        // Even after a stream error: the input was already billed.
+        if let Some(u) = acc.usage(&self.model) {
+            on_chunk(Chunk::Usage(u));
+        }
+        streamed?;
         Ok(full)
     }
 }
@@ -88,5 +149,36 @@ mod tests {
         assert_eq!(plain["max_tokens"], 900);
         let low = body("claude-haiku-5-5", Some(Effort::Low), &request());
         assert_eq!(low["output_config"], json!({"effort": "low"}));
+    }
+
+    fn observe_all(events: &[&str]) -> UsageAcc {
+        let mut acc = UsageAcc::default();
+        for e in events {
+            acc.observe(&serde_json::from_str(e).unwrap());
+        }
+        acc
+    }
+
+    const START: &str = r#"{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-haiku-5-5","content":[],"stop_reason":null,"usage":{"input_tokens":1200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":1}}}"#;
+    const DELTA: &str = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#;
+    const MESSAGE_DELTA: &str = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":310}}"#;
+
+    #[test]
+    fn usage_comes_from_message_start_and_the_last_message_delta() {
+        let u = observe_all(&[START, DELTA, MESSAGE_DELTA]).usage("haiku").expect("usage was reported");
+        assert_eq!((u.model.as_str(), u.input, u.cache_write, u.cache_read, u.output), ("claude-haiku-5-5", 1200, 0, 0, 310));
+        assert!((u.cost_usd.unwrap() - 0.000275).abs() < 1e-15, "1200 × $0.10 + 310 × $0.50 per million");
+    }
+
+    #[test]
+    fn a_stream_without_usage_reports_none() {
+        assert_eq!(observe_all(&[DELTA]).usage("claude-haiku-5-5"), None);
+    }
+
+    #[test]
+    fn an_unknown_model_is_counted_without_a_price() {
+        let start = START.replace("claude-haiku-5-5", "claude-sonnet-9");
+        let u = observe_all(&[start.as_str(), MESSAGE_DELTA]).usage("claude-sonnet-9").unwrap();
+        assert_eq!((u.model.as_str(), u.output, u.cost_usd), ("claude-sonnet-9", 310, None));
     }
 }
