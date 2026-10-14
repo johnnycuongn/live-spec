@@ -150,6 +150,13 @@ export interface TabSummary {
   closedAt: number | null;
 }
 
+/** Mirrors `sessions::WindowSummary`: one window, named in menus by its active tab. */
+export interface WindowSummary {
+  id: string;
+  active: TabSummary | null;
+  tabs: number;
+}
+
 /** One window's tabs, its full active tab, and the shared closed list (`sessions::WindowView`). */
 export interface WindowView {
   window: string;
@@ -233,6 +240,8 @@ export const api = {
   reopenTab: (tabId: string, window: string) => invoke<void>("reopen_tab", { tabId, window }),
   deleteTab: (tabId: string) => invoke<void>("delete_tab", { tabId }),
   openWindow: () => invoke<string>("open_window"),
+  moveTab: (tabId: string, to: string | null) => invoke<string>("move_tab", { tabId, to }),
+  listWindows: () => invoke<WindowSummary[]>("list_windows"),
   importLegacyDrafts: (window: string, drafts: LegacyDraft[], activeRoot: string | null) =>
     invoke<void>("import_legacy_drafts", { window, drafts, activeRoot }),
 

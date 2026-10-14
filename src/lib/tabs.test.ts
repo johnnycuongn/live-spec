@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   reopenTab: vi.fn(),
   deleteTab: vi.fn(),
   importLegacyDrafts: vi.fn(),
+  moveTab: vi.fn(),
   analyze: vi.fn(),
 }));
 vi.mock("./ipc", () => ({
@@ -126,6 +127,42 @@ describe("tabs store", () => {
       "Focus.",
       "/a|1|Focus.",
     ]);
+  });
+
+  it("moving the shown tab saves its draft first, then shows the next tab in the sidebar's order", async () => {
+    const { tabs, sessionFor, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
+    sessionFor("a1")!.setDraft("typed in a1");
+    api.moveTab.mockResolvedValue("w-2");
+    api.getTab.mockResolvedValue(full("a2", "/a"));
+    api.listWorkspace.mockResolvedValue(view(stored.slice(1), full("b1", "/b")));
+    await tabs.move("a1", null);
+    expect(api.saveDraft).toHaveBeenCalledWith("a1", "typed in a1");
+    expect(api.saveDraft.mock.invocationCallOrder[0]).toBeLessThan(api.moveTab.mock.invocationCallOrder[0]);
+    expect(api.moveTab).toHaveBeenCalledWith("a1", null);
+    expect(sessionFor("a1")).toBeUndefined();
+    expect(api.getTab).toHaveBeenCalledWith("a2"); // the backend's pick, b1, follows the stored order
+    expect(workspaceState().activeId).toBe("a2");
+  });
+
+  it("a failed move keeps the tab here and says why", async () => {
+    const { tabs, sessionFor, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
+    api.getTab.mockResolvedValue(full("a2", "/a"));
+    api.moveTab.mockRejectedValue("This window was closed.");
+    await tabs.move("a1", "w-9");
+    expect(sessionFor("a1")).toBeDefined();
+    expect(workspaceState().activeId).toBe("a1");
+    expect(workspaceState().error).toBe("This window was closed.");
+  });
+
+  it("a tab moved here from another window is shown", async () => {
+    const { tabs, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
+    api.listWorkspace.mockResolvedValue(view([...stored, summary("m1", "/m")], full("m1", "/m")));
+    await tabs.refresh();
+    expect(workspaceState().activeId).toBe("m1");
+    // The backend's active tab alone is never followed: only a tab that just arrived.
+    api.listWorkspace.mockResolvedValue(view([...stored, summary("m1", "/m")], full("a2", "/a")));
+    await tabs.refresh();
+    expect(workspaceState().activeId).toBe("m1");
   });
 });
 

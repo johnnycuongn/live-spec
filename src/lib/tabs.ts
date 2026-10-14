@@ -6,6 +6,7 @@ import { useSyncExternalStore } from "react";
 import { onWorkspaceChanged } from "./events";
 import { api, errorMessage, type Tab, type WindowView } from "./ipc";
 import { browserStorage, importLegacy } from "./legacyDrafts";
+import { moveTabTo } from "./moveTab";
 import { createSaver } from "./saver";
 import { afterClose, groupTabs, stepTab, visualOrder } from "./tabList";
 import { TabSession, type TabSessionDeps } from "./tabSession";
@@ -89,7 +90,16 @@ async function refresh(): Promise<void> {
   const view = await api.listWorkspace(state.windowId);
   if (n !== refreshing) return; // a newer refresh is on its way
   for (const id of [...sessions.keys()]) if (!view.tabs.some((t) => t.id === id)) drop(id);
+  const before = state.view?.tabs ?? null;
   set({ view });
+  // A tab moved here from another window arrives as this window's active tab (move_tab
+  // activates it there): show it. Only a tab that just arrived; the backend's active tab
+  // alone is never followed, because this window's own switches set it.
+  const arrived = view.active;
+  if (before !== null && arrived !== null && !before.some((t) => t.id === arrived.id)) {
+    if (arrived.id !== state.activeId) show(sessionOf(arrived));
+    return;
+  }
   // Nothing shown yet, or the shown tab left this window: show what the backend says is active.
   const shown = state.activeId;
   if (shown === null || !view.tabs.some((t) => t.id === shown)) {
@@ -182,6 +192,32 @@ async function close(tabId: string): Promise<void> {
   await refresh().catch((e) => set({ error: errorMessage(e) }));
 }
 
+/**
+ * Moves a tab to window `to`, or to a new window (null). The pending draft is saved first,
+ * and a failed move leaves the tab here. Moving the shown tab shows the next one in the
+ * sidebar's order, as closing does. The shell stops the tab's run; the other window shows it.
+ */
+async function move(tabId: string, to: string | null): Promise<void> {
+  const wasShown = tabId === state.activeId;
+  const next = wasShown ? afterClose(order(), tabId) : null;
+  set({ error: null });
+  // As closing does: show the next tab first, so the backend's stored-order pick never flashes.
+  if (next) await switchTo(next);
+  try {
+    await moveTabTo(tabId, to, {
+      flush: () => saver.flush(),
+      move: (id, target) => api.moveTab(id, target),
+      forget: drop,
+    });
+  } catch (e) {
+    if (next) await switchTo(tabId); // the tab stays here, shown again
+    set({ error: errorMessage(e) });
+    return;
+  }
+  if (wasShown && !next) show(null); // the window stays open and empty
+  await refresh().catch((e) => set({ error: errorMessage(e) }));
+}
+
 async function reopen(tabId: string): Promise<void> {
   set({ error: null });
   try {
@@ -230,6 +266,7 @@ export const tabs = {
   switchTo,
   newTab,
   close,
+  move,
   reopen,
   remove,
   rename,

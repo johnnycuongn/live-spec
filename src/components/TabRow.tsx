@@ -1,21 +1,24 @@
 import { useRef, useState, type MouseEvent } from "react";
-import type { TabSummary } from "../lib/ipc";
+import { api, type TabSummary } from "../lib/ipc";
+import { moveMenuItems, moveTargets, type MoveTarget } from "../lib/moveTab";
 import { renameResult, rowTitle } from "../lib/tabList";
 import { sessionFor, tabs } from "../lib/tabs";
 import { ruleState, statusLine } from "../lib/tabStatus";
 import { useTabSession } from "../lib/useTabSession";
+import { currentWindowId } from "../lib/windowId";
 import { Menu, RULE, cx, inputClass } from "./ui";
 
 /**
  * One tab: a 2 × 28 px rule in the same states as the rule between the panes,
  * the title, and a status line. Double-click or F2 renames; right-click (or
- * the context-menu key) opens Rename and Close.
+ * the context-menu key) opens Rename, the Move to items, and Close.
  */
 export function TabRow({ tab, active }: { tab: TabSummary; active: boolean }) {
   // Null until the tab is first shown: the rule is faint and there's no status line.
   const view = useTabSession(sessionFor(tab.id) ?? null);
   const [editing, setEditing] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [targets, setTargets] = useState<MoveTarget[]>([]);
   const cancelled = useRef(false);
   const live = view?.draft ?? null;
   const title = rowTitle(tab, live);
@@ -38,6 +41,12 @@ export function TabRow({ tab, active }: { tab: TabSummary; active: boolean }) {
     // The context-menu key reports 0,0: open under the row instead.
     const r = e.currentTarget.getBoundingClientRect();
     setMenu(e.clientX === 0 && e.clientY === 0 ? { x: r.left + 12, y: r.bottom } : { x: e.clientX, y: e.clientY });
+    // The other windows, for "Move to “…”". Without them, "Move to new window" still works.
+    setTargets([]);
+    api
+      .listWindows()
+      .then((list) => setTargets(moveTargets(list, currentWindowId())))
+      .catch((err: unknown) => console.error("list_windows failed", err));
   };
 
   const rule = (
@@ -95,6 +104,7 @@ export function TabRow({ tab, active }: { tab: TabSummary; active: boolean }) {
           onClose={() => setMenu(null)}
           items={[
             { label: "Rename", onSelect: startRename },
+            ...moveMenuItems(targets, (to) => void tabs.move(tab.id, to)),
             { label: "Close", onSelect: () => void tabs.close(tab.id) },
           ]}
         />
