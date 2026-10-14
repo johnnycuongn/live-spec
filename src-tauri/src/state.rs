@@ -64,6 +64,13 @@ impl AppState {
     pub fn project_entry(&self, root: &str) -> Option<Arc<ProjectEntry>> {
         self.projects.read().expect("projects lock").get(root).cloned()
     }
+
+    /// Drops every loaded project that no open tab, in any window, uses: an
+    /// index keeps file contents. Call after closing, moving or deleting tabs.
+    pub fn evict_unused_projects(&self) {
+        let open = self.sessions.open_roots(); // read before taking the projects lock
+        self.projects.write().expect("projects lock").retain(|root, _| open.contains(root));
+    }
 }
 
 /// Swaps in a new task for `key`, aborting whatever was running for that key only.

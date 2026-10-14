@@ -15,7 +15,7 @@ use livebrainstorm_core::llm::Chunk;
 use livebrainstorm_core::local::{self, catalog, download, runtime, LocalInventory};
 use livebrainstorm_core::project::explore;
 use livebrainstorm_core::project::{self, BriefStatus, StoredBrief};
-use livebrainstorm_core::sessions::{valid_id, Recorder};
+use livebrainstorm_core::sessions::{valid_id, LegacyDraft, Recorder, Tab, WindowView};
 use livebrainstorm_core::settings::{ProviderSettings, Settings, Tier};
 use livebrainstorm_core::{prompt, Error, Result};
 use serde::Serialize;
@@ -309,6 +309,111 @@ pub fn save_templates(state: State<'_, AppState>, templates: Vec<Template>) -> R
 #[tauri::command]
 pub fn restore_starter_templates(state: State<'_, AppState>) -> Result<Vec<Template>> {
     state.instructions.restore_starters()
+}
+
+// ---------- sessions ----------
+
+/// This window's tabs, its full active tab, the shared closed list, and `fresh`.
+#[tauri::command]
+pub fn list_workspace(state: State<'_, AppState>, window: String) -> Result<WindowView> {
+    check_id(&window)?;
+    state.sessions.window_view(&window)
+}
+
+/// The full tab, when a window shows it. A closed tab must be reopened first.
+#[tauri::command]
+pub fn get_tab(state: State<'_, AppState>, tab_id: String) -> Result<Tab> {
+    check_id(&tab_id)?;
+    state.sessions.open_tab_root(&tab_id)?;
+    state.sessions.tab(&tab_id)
+}
+
+#[tauri::command]
+pub fn create_tab(app: AppHandle, window: String, root: Option<String>) -> Result<Tab> {
+    check_id(&window)?;
+    let tab = app.state::<AppState>().sessions.create_tab(&window, root)?;
+    events::workspace_changed(&app, vec![window]);
+    Ok(tab)
+}
+
+/// The frontend saves here 500 ms after typing stops. A closed tab still takes
+/// a save that was already on its way. Only a new first line changes a list, so
+/// only that announces itself: every pause would otherwise refetch every window.
+#[tauri::command]
+pub fn save_draft(app: AppHandle, tab_id: String, draft: String) -> Result<()> {
+    check_id(&tab_id)?;
+    let state = app.state::<AppState>();
+    if state.sessions.save_draft(&tab_id, draft)? {
+        events::workspace_changed(&app, state.sessions.window_of(&tab_id).into_iter().collect());
+    }
+    Ok(())
+}
+
+/// `None` or a blank title returns the tab to its automatic title.
+#[tauri::command]
+pub fn rename_tab(app: AppHandle, tab_id: String, title: Option<String>) -> Result<()> {
+    check_id(&tab_id)?;
+    let state = app.state::<AppState>();
+    state.sessions.rename_tab(&tab_id, title)?;
+    events::workspace_changed(&app, state.sessions.window_of(&tab_id).into_iter().collect());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn activate_tab(app: AppHandle, window: String, tab_id: String) -> Result<()> {
+    check_id(&window)?;
+    check_id(&tab_id)?;
+    app.state::<AppState>().sessions.activate(&window, &tab_id)?;
+    events::workspace_changed(&app, vec![window]);
+    Ok(())
+}
+
+/// Stops the tab's run, keeps its file for Recently closed, and unloads its
+/// project if no open tab uses it any more.
+#[tauri::command]
+pub fn close_tab(app: AppHandle, tab_id: String) -> Result<()> {
+    check_id(&tab_id)?;
+    let state = app.state::<AppState>();
+    cancel_task(&state.analyses, &tab_id); // drops the Claude CLI children too (kill_on_drop)
+    let window = state.sessions.close_tab(&tab_id)?;
+    state.evict_unused_projects();
+    events::workspace_changed(&app, window.into_iter().collect());
+    Ok(())
+}
+
+#[tauri::command]
+pub fn reopen_tab(app: AppHandle, tab_id: String, window: String) -> Result<()> {
+    check_id(&tab_id)?;
+    check_id(&window)?;
+    app.state::<AppState>().sessions.reopen_tab(&tab_id, &window)?;
+    events::workspace_changed(&app, vec![window]);
+    Ok(())
+}
+
+/// Closed tabs only. Every window refetches its closed list.
+#[tauri::command]
+pub fn delete_tab(app: AppHandle, tab_id: String) -> Result<()> {
+    check_id(&tab_id)?;
+    let state = app.state::<AppState>();
+    state.sessions.delete_tab(&tab_id)?;
+    state.evict_unused_projects();
+    events::workspace_changed(&app, Vec::new());
+    Ok(())
+}
+
+/// The first launch after the upgrade: the old build's drafts become tabs in
+/// `window`. Runs once; later calls do nothing.
+#[tauri::command]
+pub fn import_legacy_drafts(
+    app: AppHandle,
+    window: String,
+    drafts: Vec<LegacyDraft>,
+    active_root: Option<String>,
+) -> Result<()> {
+    check_id(&window)?;
+    app.state::<AppState>().sessions.import_legacy(&window, drafts, active_root)?;
+    events::workspace_changed(&app, vec![window]);
+    Ok(())
 }
 
 // ---------- live analysis ----------
