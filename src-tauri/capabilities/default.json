@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core IPC plus the folder picker. Nothing else is exposed to the webview.",
-  "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "description": "Every app window (labels w-<n>, one per workspace window): core IPC, the folder picker, setting its own title, and closing itself. Windows are created in Rust only, so the webview never gets create-webview-window.",
+  "windows": ["w-*"],
+  "permissions": ["core:default", "dialog:allow-open", "core:window:allow-set-title", "core:window:allow-close"]
 }

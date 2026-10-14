@@ -27,6 +27,7 @@ use crate::events::{self, BriefState};
 use crate::provider;
 use crate::secrets;
 use crate::state::{cancel_task, replace_task, AppState, ProjectEntry};
+use crate::windows;
 
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -419,6 +420,22 @@ pub fn import_legacy_drafts(
     app.state::<AppState>().sessions.import_legacy(&window, drafts, active_root)?;
     events::workspace_changed(&app, vec![window]);
     Ok(())
+}
+
+// ---------- windows ----------
+
+/// A new, empty window ("Open a project" shows in it). `async`: building a window in a
+/// synchronous command deadlocks on Windows.
+#[tauri::command]
+pub async fn open_window(app: AppHandle) -> Result<String> {
+    let state = app.state::<AppState>();
+    let id = state.sessions.add_window()?;
+    if let Err(e) = windows::build(&app, &id) {
+        let _ = state.sessions.close_window(&id); // it has no tabs: this only drops the entry
+        return Err(e);
+    }
+    events::workspace_changed(&app, vec![id.clone()]);
+    Ok(id)
 }
 
 // ---------- live analysis ----------

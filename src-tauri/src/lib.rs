@@ -6,6 +6,7 @@ mod events;
 mod provider;
 mod secrets;
 mod state;
+mod windows;
 
 use tauri::{Manager, RunEvent};
 
@@ -14,10 +15,29 @@ use state::AppState;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Restores each window's position and size by label (= workspace window id).
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
+        .on_window_event(windows::on_window_event)
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let config_dir = app.path().app_config_dir()?;
             app.manage(AppState::new(&data_dir, &config_dir));
+            // One window per workspace window; tauri.conf.json declares none.
+            let ids = app.state::<AppState>().sessions.windows_to_open().unwrap_or_else(|e| {
+                eprintln!("LiveBrainstorm: couldn't read the saved windows: {e}");
+                vec!["w-1".to_owned()]
+            });
+            for id in ids {
+                windows::build(app.handle(), &id)?;
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -48,6 +68,7 @@ pub fn run() {
             commands::reopen_tab,
             commands::delete_tab,
             commands::import_legacy_drafts,
+            commands::open_window,
             commands::local_inventory,
             commands::install_runtime,
             commands::download_model,
