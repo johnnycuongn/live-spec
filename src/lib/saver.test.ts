@@ -86,4 +86,53 @@ describe("createSaver", () => {
     await expect(flushed).resolves.toBe(false);
     expect(onError).toHaveBeenCalledTimes(1);
   });
+
+  it("a save that failed and settled before the flush is retried by it", async () => {
+    let ok = false;
+    const save = vi.fn((_k: string, _v: string) => (ok ? Promise.resolve() : Promise.reject(new Error("disk full"))));
+    const onError = vi.fn();
+    const s = createSaver(save, 500, onError);
+    s.schedule("/a", "x");
+    await vi.advanceTimersByTimeAsync(500); // the timer's save fails and settles
+    expect(onError).toHaveBeenCalledTimes(1);
+    await expect(s.flush()).resolves.toBe(false); // still failing: the edit is not on disk
+    expect(save).toHaveBeenCalledTimes(2);
+    ok = true;
+    await expect(s.flush()).resolves.toBe(true); // retried, saved
+    expect(save).toHaveBeenLastCalledWith("/a", "x");
+    expect(save).toHaveBeenCalledTimes(3);
+    await expect(s.flush()).resolves.toBe(true);
+    expect(save).toHaveBeenCalledTimes(3); // nothing left to retry
+  });
+
+  it("a newer value for the same key supersedes a failed one", async () => {
+    let ok = false;
+    const save = vi.fn((_k: string, _v: string) => (ok ? Promise.resolve() : Promise.reject(new Error("disk full"))));
+    const s = createSaver(save, 500, () => {});
+    s.schedule("/a", "old");
+    await vi.advanceTimersByTimeAsync(500);
+    ok = true;
+    s.schedule("/a", "new");
+    await expect(s.flush()).resolves.toBe(true);
+    expect(save).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenLastCalledWith("/a", "new");
+    await s.flush();
+    expect(save).toHaveBeenCalledTimes(2); // "old" is not retried
+  });
+
+  it("a failed save of one key is retried alongside another key's", async () => {
+    let ok = false;
+    const save = vi.fn((_k: string, _v: string) => (ok ? Promise.resolve() : Promise.reject(new Error("disk full"))));
+    const s = createSaver(save, 500, () => {});
+    s.schedule("/a", "a1");
+    s.schedule("/b", "b1"); // sends /a's (fails)
+    await vi.advanceTimersByTimeAsync(500); // sends /b's (fails)
+    ok = true;
+    await expect(s.flush()).resolves.toBe(true);
+    const calls = save.mock.calls.length;
+    expect(save).toHaveBeenCalledWith("/a", "a1");
+    expect(save).toHaveBeenCalledWith("/b", "b1");
+    await expect(s.flush()).resolves.toBe(true);
+    expect(save).toHaveBeenCalledTimes(calls); // both saved: nothing left owed
+  });
 });

@@ -29,7 +29,10 @@ export interface ProjectsState {
   /** Keyed by root; "" is tabs with no project. */
   instructions: Record<string, ProjectInstructions>;
   templates: Template[];
-  instructionsError: string | null;
+  /** Why a root's instructions couldn't load or save, by root ("" is tabs with no project). */
+  instructionsErrors: Record<string, string>;
+  /** Why the templates couldn't be saved. */
+  templatesError: string | null;
   briefs: Record<string, BriefRun>;
 }
 
@@ -38,7 +41,8 @@ let state: ProjectsState = {
   summaryErrors: {},
   instructions: {},
   templates: [],
-  instructionsError: null,
+  instructionsErrors: {},
+  templatesError: null,
   briefs: {},
 };
 const listeners = new Set<() => void>();
@@ -52,6 +56,8 @@ const nextSeq = (root: string) => {
 };
 /** Counts the edits typed into each root's instructions, so a refetch can tell the user typed meanwhile. */
 const edits = new Map<string, number>();
+/** The same for the templates, which every root shares. */
+let templateEdits = 0;
 let started = false;
 
 function set(patch: Partial<ProjectsState>) {
@@ -67,11 +73,20 @@ function without<T>(record: Record<string, T>, k: string): Record<string, T> {
   return next;
 }
 
-// Instruction edits save a moment after typing stops, each under the project it was typed in.
+// Instruction edits save a moment after typing stops, each under the project it was typed in. The
+// error is recorded against that root here (the saver's onError doesn't know the key); a later
+// successful save of the root clears it.
 const saver = createSaver<ProjectInstructions>(
-  (root, p) => api.saveProjectInstructions(root, p),
+  (root, p) =>
+    api.saveProjectInstructions(root, p).then(
+      () => set({ instructionsErrors: without(state.instructionsErrors, root) }),
+      (e) => {
+        set({ instructionsErrors: { ...state.instructionsErrors, [root]: `Couldn't save instructions: ${errorMessage(e)}` } });
+        throw e;
+      },
+    ),
   500,
-  (e) => set({ instructionsError: `Couldn't save instructions: ${errorMessage(e)}` }),
+  () => {},
 );
 
 /**
@@ -108,16 +123,23 @@ async function loadSummary(root: string): Promise<void> {
 
 async function loadInstructions(root: string | null): Promise<void> {
   const edited = edits.get(key(root)) ?? 0;
-  await saver.flush(); // a pending edit must not lose to the read below
+  const templatesEdited = templateEdits;
+  const saved = await saver.flush(); // a pending edit must not lose to the read below
   try {
     const view = await api.getInstructions(key(root));
     // Typed since this load began: the fetched copy is older than the text on screen. Keep the text.
-    if ((edits.get(key(root)) ?? 0) !== edited) set({ templates: view.templates });
-    else set({ templates: view.templates, instructions: { ...state.instructions, [key(root)]: view.project } });
+    // So is text whose save failed (flush false): the stored copy lacks it, and this is the only copy.
+    const keepTyped = state.instructions[key(root)] !== undefined && (!saved || (edits.get(key(root)) ?? 0) !== edited);
+    set({
+      // Templates edited here during the fetch are newer than the fetched ones, too.
+      ...(templateEdits === templatesEdited ? { templates: view.templates } : {}),
+      ...(keepTyped ? {} : { instructions: { ...state.instructions, [key(root)]: view.project } }),
+      instructionsErrors: without(state.instructionsErrors, key(root)),
+    });
   } catch (e) {
     // Not loaded, not empty: empty instructions would re-run a tab's saved notes without the
     // ones they were made with, and typing could overwrite the saved file. ensure() retries.
-    set({ instructionsError: `Couldn't load instructions: ${errorMessage(e)}` });
+    set({ instructionsErrors: { ...state.instructionsErrors, [key(root)]: `Couldn't load instructions: ${errorMessage(e)}` } });
     return;
   }
   pushContext(root);
@@ -145,27 +167,31 @@ async function openFolder(path: string): Promise<string> {
 }
 
 function changeInstructions(root: string | null, next: ProjectInstructions): void {
+  // Not loaded yet: the edit would be saved over the stored instructions it never saw.
+  if (!state.instructions[key(root)]) return;
   edits.set(key(root), (edits.get(key(root)) ?? 0) + 1);
-  set({ instructions: { ...state.instructions, [key(root)]: next }, instructionsError: null });
+  set({ instructions: { ...state.instructions, [key(root)]: next }, instructionsErrors: without(state.instructionsErrors, key(root)) });
   saver.schedule(key(root), next);
   pushContext(root); // re-reads the shown tab's draft, as editing instructions does today
 }
 
 async function changeTemplates(next: Template[]): Promise<void> {
+  templateEdits++;
   set({ templates: next });
   try {
     await api.saveTemplates(next);
-    set({ instructionsError: null });
+    set({ templatesError: null });
   } catch (e) {
-    set({ instructionsError: `Couldn't save instructions: ${errorMessage(e)}` });
+    set({ templatesError: `Couldn't save templates: ${errorMessage(e)}` });
   }
 }
 
 async function restoreStarters(): Promise<void> {
+  templateEdits++;
   try {
-    set({ templates: await api.restoreStarterTemplates(), instructionsError: null });
+    set({ templates: await api.restoreStarterTemplates(), templatesError: null });
   } catch (e) {
-    set({ instructionsError: `Couldn't save instructions: ${errorMessage(e)}` });
+    set({ templatesError: `Couldn't save templates: ${errorMessage(e)}` });
   }
 }
 

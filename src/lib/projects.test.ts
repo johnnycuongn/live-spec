@@ -194,11 +194,80 @@ describe("load failures and ordering", () => {
     await settle();
     expect(setContext).not.toHaveBeenCalled(); // empty instructions would re-run saved notes without "Focus."
     expect(projectsState().instructions["/p"]).toBeUndefined();
-    expect(projectsState().instructionsError).toBe("Couldn't load instructions: disk unreadable");
+    expect(projectsState().instructionsErrors["/p"]).toBe("Couldn't load instructions: disk unreadable");
+    expect(projectsState().instructionsErrors["/other"]).toBeUndefined(); // per root
     projects.ensure("/p");
     await settle();
     expect(setContext).toHaveBeenCalledTimes(1);
     expect(setContext).toHaveBeenCalledWith("/p", "/p|1|Focus.", "Focus.");
+    expect(projectsState().instructionsErrors["/p"]).toBeUndefined(); // cleared by the successful load
+  });
+
+  it("editing instructions that haven't loaded is refused: it would save over the stored ones", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockRejectedValue("disk unreadable");
+    projects.ensure("/p");
+    await settle();
+    projects.changeInstructions("/p", { default: "", current: "typed", templateId: null });
+    await projects.flush();
+    expect(projectsState().instructions["/p"]).toBeUndefined();
+    expect(api.saveProjectInstructions).not.toHaveBeenCalled();
+    expect(setContext).not.toHaveBeenCalled();
+  });
+
+  it("a failed save keeps the error on its own root, and a later successful save clears it", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/a", 1));
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure("/a");
+    projects.ensure("/b");
+    await settle();
+    api.saveProjectInstructions.mockRejectedValueOnce("disk full");
+    projects.changeInstructions("/a", { default: "", current: "x", templateId: null });
+    await projects.flush();
+    expect(projectsState().instructionsErrors["/a"]).toBe("Couldn't save instructions: disk full");
+    expect(projectsState().instructionsErrors["/b"]).toBeUndefined();
+    await projects.flush(); // retried
+    expect(projectsState().instructionsErrors["/a"]).toBeUndefined();
+  });
+
+  it("a refetch is not allowed to replace typed text whose save failed", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure("/p");
+    await settle();
+    const typed = { default: "", current: "typed", templateId: null };
+    api.saveProjectInstructions.mockRejectedValue("disk full");
+    projects.changeInstructions("/p", typed);
+    await vi.waitFor(() => expect(projectsState().instructions["/p"]).toEqual(typed));
+    api.getInstructions.mockResolvedValue({
+      templates: [{ id: "t", name: "T", text: "tt" }],
+      project: { default: "", current: "older stored copy", templateId: null },
+    });
+    await projects.reloadInstructions("/p");
+    expect(projectsState().instructions["/p"]).toEqual(typed); // the typed copy is the only one with the edit
+    expect(projectsState().templates).toEqual([{ id: "t", name: "T", text: "tt" }]);
+  });
+
+  it("a refetch started before a local template edit doesn't put the old templates back", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockResolvedValueOnce(instructionsView(""));
+    api.saveTemplates.mockResolvedValue(undefined);
+    projects.ensure("/p");
+    await settle();
+    const fetched = deferred<InstructionsView>();
+    api.getInstructions.mockReturnValue(fetched.promise);
+    const reloading = projects.reloadInstructions("/p");
+    await settle();
+    const mine = [{ id: "m", name: "Mine", text: "edited meanwhile" }];
+    await projects.changeTemplates(mine);
+    fetched.resolve({ templates: [{ id: "o", name: "Old", text: "old" }], project: { default: "", current: "other", templateId: null } });
+    await reloading;
+    expect(projectsState().templates).toEqual(mine);
+    expect(projectsState().instructions["/p"].current).toBe("other"); // instructions were not typed: still applied
   });
 
   it("only the latest started summary load applies", async () => {

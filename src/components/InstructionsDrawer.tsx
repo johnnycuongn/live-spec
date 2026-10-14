@@ -5,9 +5,13 @@ import { Button, Field, cx, inputClass } from "./ui";
 
 interface Props {
   instructions: ProjectInstructions;
+  /** False until this project's instructions have loaded: nothing here can be edited before then. */
+  loaded: boolean;
   templates: Template[];
   localModel: boolean;
   error: string | null;
+  /** Tries loading the instructions again (the error says they couldn't load). */
+  onRetry: () => void;
   onChange: (next: ProjectInstructions) => void;
   onClose: () => void;
   /** The templates section (TemplateList). */
@@ -50,6 +54,8 @@ export function InstructionsDrawer(p: Props) {
       <div className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-6 pt-4 pb-10">
         <p className="text-xs text-muted">These steer the notes for this project: what LiveBrainstorm looks for, not the four sections.</p>
 
+        {/* Disabled until this project's instructions load: typing earlier would save over the stored ones. */}
+        <fieldset disabled={!p.loaded} className="contents">
         {p.templates.length > 0 && (
           <div className="flex items-end gap-2">
             <Field label="Template">
@@ -106,10 +112,16 @@ export function InstructionsDrawer(p: Props) {
           </div>
           <p className="truncate text-xs text-muted">{i.default.trim() ? `Default: ${firstLine(i.default)}` : "No default for this project"}</p>
         </div>
+        </fieldset>
 
         {p.error && (
-          <p className="text-[13px] text-fault" role="alert">
+          <p className="flex items-center gap-2 text-[13px] text-fault" role="alert">
             {p.error}
+            {!p.loaded && (
+              <Button variant="link" onClick={p.onRetry}>
+                Try again
+              </Button>
+            )}
           </p>
         )}
         {p.children}

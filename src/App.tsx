@@ -174,7 +174,7 @@ export default function App() {
     windowError ??
     openError ??
     (root !== null ? (pj.summaryErrors[root] ?? null) : null) ??
-    (pj.instructions[root ?? ""] ? null : pj.instructionsError);
+    (pj.instructions[root ?? ""] ? null : (pj.instructionsErrors[root ?? ""] ?? null));
   const drawerSummary = briefRoot !== null ? (pj.summaries[briefRoot] ?? null) : null;
   const drawerRun = briefRoot !== null ? (pj.briefs[briefRoot] ?? IDLE_BRIEF) : IDLE_BRIEF;
 
@@ -287,9 +287,11 @@ export default function App() {
           <InstructionsDrawer
             key={root ?? ""}
             instructions={instructions}
+            loaded={pj.instructions[root ?? ""] !== undefined}
             templates={pj.templates}
             localModel={settings?.provider.kind === "local"}
-            error={pj.instructionsError}
+            error={pj.instructionsErrors[root ?? ""] ?? pj.templatesError}
+            onRetry={() => projects.ensure(root)}
             onChange={(next) => projects.changeInstructions(root, next)}
             onClose={() => setShowInstructions(false)}
           >
