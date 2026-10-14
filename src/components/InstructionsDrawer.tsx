@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { ProjectInstructions, Template } from "../lib/ipc";
-import { applyTemplate, clearInstructions, counterText, firstLine, resetToDefault, saveAsDefault } from "../lib/instructions";
+import { applyTemplate, charCount, clearInstructions, counterText, firstLine, resetToDefault, saveAsDefault } from "../lib/instructions";
 import { Button, Field, cx, inputClass } from "./ui";
 
 interface Props {
@@ -20,7 +20,7 @@ export function InstructionsDrawer(p: Props) {
   const [undo, setUndo] = useState<ProjectInstructions | null>(null);
   const i = p.instructions;
   const pickedId = p.templates.some((t) => t.id === picked) ? picked : (p.templates[0]?.id ?? "");
-  const counter = counterText(i.current.length);
+  const counter = counterText(charCount(i.current));
 
   const change = (next: ProjectInstructions) => {
     setUndo(null);

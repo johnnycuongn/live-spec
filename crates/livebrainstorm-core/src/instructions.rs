@@ -114,7 +114,9 @@ impl InstructionStore {
     /// kept as `.bad` first. Instructions must never block opening a project.
     pub fn load(&self) -> InstructionsFile {
         let _guard = self.lock.lock().expect("instructions lock");
-        self.read()
+        // A file that can't be read right now (locked, I/O error) is left exactly
+        // where it is; the UI just shows the starters until the next load.
+        self.read().unwrap_or_default()
     }
 
     pub fn view(&self, root: &str) -> InstructionsView {
@@ -154,23 +156,30 @@ impl InstructionStore {
 
     fn update(&self, change: impl FnOnce(&mut InstructionsFile)) -> Result<()> {
         let _guard = self.lock.lock().expect("instructions lock");
-        let mut file = self.read();
+        let mut file = self.read()?; // never write over a file we couldn't read
         change(&mut file);
         self.write(&file)
     }
 
-    fn read(&self) -> InstructionsFile {
+    fn read(&self) -> Result<InstructionsFile> {
         match std::fs::read(&self.path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|_| self.set_aside()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => InstructionsFile::default(),
-            Err(_) => self.set_aside(),
+            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_else(|_| self.set_aside())),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(InstructionsFile::default()),
+            Err(e) => Err(e.into()),
         }
     }
 
-    /// Keeps a file we can't read instead of overwriting the user's templates
-    /// on the next save (settings.json just resets; this holds their writing).
+    /// Keeps a file that parsed badly instead of overwriting the user's
+    /// templates on the next save (settings.json just resets; this holds their
+    /// writing). An earlier kept copy is never replaced: `.bad`, `.bad.1`, …
     fn set_aside(&self) -> InstructionsFile {
-        let _ = std::fs::rename(&self.path, self.path.with_extension("json.bad"));
+        let name = self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let kept = (0u32..)
+            .map(|n| self.path.with_file_name(if n == 0 { format!("{name}.bad") } else { format!("{name}.bad.{n}") }))
+            .find(|p| !p.exists());
+        if let Some(kept) = kept {
+            let _ = std::fs::rename(&self.path, kept);
+        }
         InstructionsFile::default()
     }
 
@@ -215,6 +224,29 @@ mod tests {
         store.save_project("/p", ProjectInstructions { current: "x".into(), ..Default::default() }).unwrap();
         assert_eq!(std::fs::read_to_string(&bad).unwrap(), "{ my precious templates", "later saves never touch the .bad copy");
         assert_eq!(store.view("/p").project.current, "x");
+    }
+
+    #[test]
+    fn a_second_corruption_never_destroys_the_first_kept_copy() {
+        let (dir, store) = store();
+        let file = dir.path().join("instructions.json");
+        std::fs::write(&file, "first").unwrap();
+        store.load();
+        std::fs::write(&file, "second").unwrap();
+        store.load();
+        assert_eq!(std::fs::read_to_string(dir.path().join("instructions.json.bad")).unwrap(), "first");
+        assert_eq!(std::fs::read_to_string(dir.path().join("instructions.json.bad.1")).unwrap(), "second");
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_left_alone_and_never_overwritten() {
+        let (dir, store) = store();
+        // A directory where the file should be: reading fails, but not with NotFound.
+        std::fs::create_dir(dir.path().join("instructions.json")).unwrap();
+        assert_eq!(store.load(), InstructionsFile::default(), "the UI still gets the starters");
+        assert!(store.save_project("/p", ProjectInstructions { current: "x".into(), ..Default::default() }).is_err());
+        assert!(dir.path().join("instructions.json").is_dir(), "nothing was renamed or replaced");
+        assert!(!dir.path().join("instructions.json.bad").exists(), "a read failure is not corruption");
     }
 
     #[test]

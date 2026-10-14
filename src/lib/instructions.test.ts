@@ -4,6 +4,7 @@ import {
   EMPTY_INSTRUCTIONS,
   analysisContextKey,
   applyTemplate,
+  charCount,
   clearInstructions,
   counterText,
   firstLine,
@@ -67,6 +68,12 @@ describe("actions", () => {
     expect(upsertTemplate([feat, bug], { ...bug, name: "Bugs" }).map((x) => x.name)).toEqual(["Feature design", "Bugs"]);
     expect(upsertTemplate([feat], bug).map((x) => x.id)).toEqual(["feature-design", "bug-hunt"]);
     expect(removeTemplate([feat, bug], "feature-design")).toEqual([bug]);
+  });
+
+  it("counts characters the way the backend clips them, not UTF-16 units", () => {
+    expect(charCount("héllo")).toBe(5);
+    expect(charCount("😀".repeat(2500))).toBe(2500);
+    expect("😀".repeat(2500).length).toBe(5000);
   });
 
   it("counter and the default's first line", () => {

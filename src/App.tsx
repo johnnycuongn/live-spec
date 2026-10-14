@@ -46,7 +46,15 @@ export default function App() {
       ),
     [],
   );
-  useEffect(() => () => void saver.flush(), [saver]);
+  useEffect(() => {
+    // Closing the window doesn't unmount React, so flush when the page goes away too.
+    const flush = () => void saver.flush();
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      flush();
+    };
+  }, [saver]);
 
   // Opening (or re-opening) a project rescans it, so its summary is the
   // single source of truth for the brief and whether it's stale.
@@ -75,6 +83,7 @@ export default function App() {
         const summary = await api.openProject(path);
         // Fetched before any state changes, so the project and its instructions
         // land in one render and the first analysis already has them.
+        await saver.flush(); // an edit typed during the scan must not lose to the read below
         const view = await api.getInstructions(summary.root);
         openRoot.current = summary.root;
         setProject(summary);

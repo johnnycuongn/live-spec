@@ -22,6 +22,9 @@ export function instructionsLabel(p: ProjectInstructions, templates: Template[])
 export const analysisContextKey = (root: string | undefined, briefCreatedAt: number | undefined, instructions: string) =>
   `${root ?? ""}|${briefCreatedAt ?? 0}|${instructions.trim()}`;
 
+/** Characters as the backend counts them (Unicode scalars), not UTF-16 units. */
+export const charCount = (s: string) => [...s].length;
+
 const count = (n: number) => n.toLocaleString("en-US");
 
 export function counterText(length: number): { text: string; over: boolean } {
