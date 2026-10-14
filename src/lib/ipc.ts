@@ -15,12 +15,13 @@ export interface CheckResult {
 export type UiEvent =
   | { type: "text"; text: string; lane: number }
   | { type: "activity"; label: string; lane: number }
-  | { type: "done"; text: string }
+  | { type: "done"; text: string; partial?: boolean }
   | { type: "error"; message: string }
   | { type: "progress"; downloaded: number; total: number | null }
   | { type: "checking"; count: number; total: number }
   | ({ type: "check" } & CheckResult)
   | { type: "notice"; message: string }
+  | { type: "checksStopped"; message: string }
   | { type: "started" }
   | { type: "skipped" };
 

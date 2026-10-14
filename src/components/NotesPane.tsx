@@ -86,7 +86,19 @@ export function NotesPane({ analysis: a, hasProject, briefMissing, onBuildBrief 
         <p className="mb-5 text-xs text-faint" aria-live="polite">
           {statusText(a)}
         </p>
-        {a.notice && <p className="mb-4 text-xs text-muted">{a.notice}</p>}
+        {a.notices.map((n, i) => (
+          <p key={i} className="mb-2 text-xs text-muted">
+            {n}
+          </p>
+        ))}
+        {a.partial && a.status === "done" && (
+          <p className="mb-4 text-xs text-muted">
+            Some sections are missing.{" "}
+            <Button variant="link" onClick={a.rerun}>
+              Try again
+            </Button>
+          </p>
+        )}
 
         {!hasProject &&<p className="mb-4 text-[13px] text-muted">No project open, so notes won't know your code.</p>}
         {hasProject && briefMissing && (
@@ -135,7 +147,7 @@ export function NotesPane({ analysis: a, hasProject, briefMissing, onBuildBrief 
                 <h2>
                   <Eyebrow dot="bg-ink">Checked in code</Eyebrow>
                 </h2>
-                <p className="text-xs text-faint">{checkSummary(a.checking, a.checks.length, !!a.notice)}</p>
+                <p className="text-xs text-faint">{checkSummary(a.checking, a.checks.length, a.checksStopped)}</p>
                 <ul className="grid gap-2">
                   {a.checks.map((c, i) => (
                     <CheckRow key={i} check={c} />

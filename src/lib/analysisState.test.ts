@@ -24,7 +24,7 @@ describe("applyEvent", () => {
     const s = run([{ type: "done", text: "## Intent\n- a" }, { type: "notice", message: "Couldn't check" }]);
     expect(s.status).toBe("done");
     expect(s.markdown).toBe("## Intent\n- a");
-    expect(s.notice).toBe("Couldn't check");
+    expect(s.notices).toEqual(["Couldn't check"]);
   });
 
   it("keeps the old notes visible until the new run starts", () => {
@@ -36,7 +36,8 @@ describe("applyEvent", () => {
     expect(started.markdown).toBe("");
     expect(started.checks).toEqual([]);
     expect(started.checking).toBeNull();
-    expect(started.notice).toBeNull();
+    expect(started.notices).toEqual([]);
+    expect(started.checksStopped).toBe(false);
   });
 
   it("a skipped pause keeps the notes and shows them as current", () => {
@@ -85,13 +86,15 @@ describe("checks interrupted by a skipped pause", () => {
       { type: "skipped" },
     );
     expect(s.status).toBe("done");
-    expect(s.notice).toBe("Checks stopped when you edited.");
-    expect(checkSummary(s.checking!, s.checks.length, !!s.notice)).toBe("1 of 4 faults checked");
+    expect(s.notices).toEqual(["Checks stopped when you edited."]);
+    expect(s.checksStopped).toBe(true);
+    expect(checkSummary(s.checking!, s.checks.length, s.checksStopped)).toBe("1 of 4 faults checked");
   });
 
   it("finished checks are left alone", () => {
     const s = applyEvent(run([{ type: "done", text: "" }, { type: "checking", count: 1, total: 1 }, check]), { type: "skipped" });
-    expect(s.notice).toBeNull();
+    expect(s.notices).toEqual([]);
+    expect(s.checksStopped).toBe(false);
   });
 });
 
@@ -109,5 +112,44 @@ describe("parallel lanes", () => {
     const s = run([{ type: "started" }, { type: "text", text: "## Intent\n- old", lane: 0 }, { type: "done", text: "## Intent\n- old" }]);
     const next = applyEvent(startAnalysis(s, "v2"), { type: "started" });
     expect(applyEvent(next, { type: "text", text: "## Faults\n- new", lane: 1 }).markdown).toBe("## Faults\n- new");
+  });
+});
+
+describe("notices", () => {
+  it("keeps every notice, not just the last", () => {
+    const s = run([
+      { type: "started" },
+      { type: "notice", message: "Couldn't write Directions and Questions: rate limited" },
+      { type: "checksStopped", message: "Couldn't check the notes against the code: timed out" },
+    ]);
+    expect(s.notices).toEqual([
+      "Couldn't write Directions and Questions: rate limited",
+      "Couldn't check the notes against the code: timed out",
+    ]);
+  });
+
+  it("a lane notice never marks running checks as stopped", () => {
+    const s = run([{ type: "checking", count: 3, total: 3 }, { type: "notice", message: "Couldn't write Questions: busy" }]);
+    expect(s.checksStopped).toBe(false);
+    expect(checkSummary(s.checking!, s.checks.length, s.checksStopped)).toBe("Checking 3 of 3 faults…");
+  });
+
+  it("a failed check stops the checks", () => {
+    const s = run([{ type: "checking", count: 3, total: 3 }, { type: "checksStopped", message: "Couldn't check" }]);
+    expect(s.checksStopped).toBe(true);
+  });
+});
+
+describe("partly written notes", () => {
+  it("offer a retry and never count as analysed", () => {
+    const s = run([{ type: "started" }, { type: "done", text: "## Intent\n- i", partial: true }]);
+    expect(s.partial).toBe(true);
+    expect(lastAnalyzedAfter({ draft: "v0", context: "A" }, { type: "done", text: "", partial: true }, "v1", "A")).toBeNull();
+    expect(lastAnalyzedAfter(null, { type: "done", text: "", partial: false }, "v1", "A")).toEqual({ draft: "v1", context: "A" });
+  });
+
+  it("a fresh run clears the retry offer", () => {
+    const s = run([{ type: "done", text: "x", partial: true }, { type: "started" }]);
+    expect(s.partial).toBe(false);
   });
 });

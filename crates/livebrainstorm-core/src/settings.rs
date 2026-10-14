@@ -96,7 +96,9 @@ pub struct AgentSettings {
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        Self { max_agents: 4, parallel_brief: true, parallel_notes: true }
+        // Parallel notes are opt-in: with Claude Code, 4 lanes measured
+        // slower than 1 (per-call overhead dominates; see the spec).
+        Self { max_agents: 4, parallel_brief: true, parallel_notes: false }
     }
 }
 
@@ -203,7 +205,9 @@ mod tests {
     #[test]
     fn note_agents_follow_the_settings() {
         let mut s = Settings::default();
-        assert_eq!((s.max_agents(), s.effective_note_agents()), (4, 4));
+        assert_eq!((s.max_agents(), s.effective_note_agents()), (4, 1), "parallel notes are opt-in: measured slower with Claude Code");
+        s.agents.parallel_notes = true;
+        assert_eq!(s.effective_note_agents(), 4);
         s.agents.max_agents = 2;
         assert_eq!(s.effective_note_agents(), 2);
         s.agents.max_agents = 8;
@@ -214,7 +218,7 @@ mod tests {
         assert_eq!(s.max_agents(), 8, "clamped to at most eight");
         s.agents = AgentSettings { parallel_notes: false, ..AgentSettings::default() };
         assert_eq!(s.effective_note_agents(), 1);
-        s.agents = AgentSettings::default();
+        s.agents = AgentSettings { parallel_notes: true, ..AgentSettings::default() };
         s.provider = ProviderSettings::Local { model_id: "qwen3-4b-instruct".into() };
         assert_eq!(s.effective_note_agents(), 1, "one local server would just queue the requests");
     }
@@ -225,8 +229,8 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, r#"{"provider":{"kind":"claudeCli","binaryPath":null,"fastModel":"haiku","deepModel":"sonnet"},"debounceMs":900}"#).unwrap();
         let s = Settings::load(&path);
-        assert_eq!(s.agents, AgentSettings { max_agents: 4, parallel_brief: true, parallel_notes: true });
+        assert_eq!(s.agents, AgentSettings { max_agents: 4, parallel_brief: true, parallel_notes: false });
         let json = serde_json::to_value(&s).unwrap();
-        assert_eq!(json["agents"], serde_json::json!({"maxAgents": 4, "parallelBrief": true, "parallelNotes": true}));
+        assert_eq!(json["agents"], serde_json::json!({"maxAgents": 4, "parallelBrief": true, "parallelNotes": false}));
     }
 }

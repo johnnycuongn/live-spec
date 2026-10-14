@@ -27,7 +27,8 @@ use crate::state::{replace_task, AppState};
 pub enum UiEvent {
     Text { text: String, lane: usize },
     Activity { label: String, lane: usize },
-    Done { text: String },
+    /// `partial`: some sections couldn't be written (see the notice).
+    Done { text: String, partial: bool },
     Error { message: String },
     Progress { downloaded: u64, total: Option<u64> },
     /// `count` of the `total` Faults name code that's being checked.
@@ -35,6 +36,8 @@ pub enum UiEvent {
     Check(CheckResult),
     /// Non-fatal: the notes are fine, something around them failed.
     Notice { message: String },
+    /// The fact-check failed; the remaining claims were dropped.
+    ChecksStopped { message: String },
     /// The pre-phase passed: the model call is starting (clear old notes now).
     Started,
     /// The gate found no real change: keep the current notes. Final.
@@ -46,7 +49,7 @@ impl From<CheckEvent> for UiEvent {
         match ev {
             CheckEvent::Checking { count, total } => UiEvent::Checking { count, total },
             CheckEvent::Result(result) => UiEvent::Check(result),
-            CheckEvent::Notice(message) => UiEvent::Notice { message },
+            CheckEvent::Notice(message) => UiEvent::ChecksStopped { message },
         }
     }
 }
@@ -65,7 +68,7 @@ fn on_chunk(ch: &Channel<UiEvent>) -> impl FnMut(Chunk) + Send + '_ {
 
 fn finish(ch: &Channel<UiEvent>, result: Result<String>) {
     match result {
-        Ok(text) => send(ch, UiEvent::Done { text }),
+        Ok(text) => send(ch, UiEvent::Done { text, partial: false }),
         Err(e) => send(ch, UiEvent::Error { message: e.to_string() }),
     }
 }
@@ -251,11 +254,12 @@ pub async fn analyze(app: AppHandle, draft: String, previous_draft: Option<Strin
 
         let write = async {
             match analysis::merge_lanes(&groups, agents::run_limited(groups.len(), lanes).await) {
-                Ok((text, notices)) => {
-                    for message in notices {
+                Ok((text, notice)) => {
+                    let partial = notice.is_some();
+                    if let Some(message) = notice {
                         send(&on_event, UiEvent::Notice { message });
                     }
-                    send(&on_event, UiEvent::Done { text });
+                    send(&on_event, UiEvent::Done { text, partial });
                 }
                 Err(e) => send(&on_event, UiEvent::Error { message: e.to_string() }),
             }

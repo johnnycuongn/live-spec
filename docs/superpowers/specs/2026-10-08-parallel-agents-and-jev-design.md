@@ -20,7 +20,7 @@ Make LiveBrainstorm faster at both of its slow jobs: building the project brief,
 | What max agents limits | Only LLM agents; Jev requests have their own fixed limit | User approved |
 | Default max agents | 4 | User approved |
 | Key source | Project `.env.local` for local development, built first. A Keychain key set in Settings takes precedence when present (lookup order below). | User |
-| Parallel notes | The four sections split across agents | Assumed from "make brainstorming faster"; not contradicted |
+| Parallel notes | The four sections can be split across agents, but **off by default** (`agents.parallelNotes: false`) | Originally assumed on; turned off after the phase 3 measurement showed 4 lanes slower than 1 with Claude Code |
 | Live code lookup | Done by plain code plus Jev checks, *not* by LLM agents grepping files | Follows from the Jev choice |
 
 ## Non-goals

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::jev::{gate, rerank, Jev};
 use crate::project::{retrieve, shortlist, ProjectIndex, Snippet};
-use crate::Error;
+use crate::{prompt, Error};
 
 /// Gate and rerank share this deadline. Jev answers in about 0.3 s, and the
 /// gate and all 20 rerank requests go out at once, so this leaves room for a
@@ -83,23 +83,37 @@ pub async fn pre_phase(input: PreInput<'_>, budget: Duration) -> PreOutcome {
     PreOutcome::Analyze { snippets, notice: gate_notice.or(rerank_notice) }
 }
 
-/// Joins the lanes' texts in lane order. A failed lane becomes a notice
-/// naming its sections; only if every lane failed is the first error returned.
-pub fn merge_lanes(groups: &[Vec<&str>], results: Vec<crate::Result<String>>) -> crate::Result<(String, Vec<String>)> {
-    let (mut texts, mut notices, mut first_error) = (Vec::new(), Vec::new(), None);
+/// Joins the lanes in lane order, keeping only each lane's own sections, so
+/// a preamble or a stray heading never lands in another lane's section.
+/// Sections that a lane failed to write, or left out, become one notice
+/// naming every missing section; only if nothing survived is the first
+/// failure returned as an error.
+pub fn merge_lanes(groups: &[Vec<&str>], results: Vec<crate::Result<String>>) -> crate::Result<(String, Option<String>)> {
+    let (mut parts, mut missing, mut first_error) = (Vec::new(), Vec::new(), None);
     for (sections, result) in groups.iter().zip(results) {
-        match result {
-            Ok(text) => texts.push(text.trim().to_owned()),
+        let text = match result {
+            Ok(text) => text,
             Err(e) => {
-                notices.push(format!("Couldn't write {}: {e}", sections.join(" and ")));
+                missing.extend(sections.iter().copied());
                 first_error.get_or_insert(e);
+                continue;
+            }
+        };
+        for name in sections {
+            match prompt::section_body(&text, name).filter(|body| !body.is_empty()) {
+                Some(body) => parts.push(format!("## {name}\n{body}")),
+                None => {
+                    missing.push(*name);
+                    first_error.get_or_insert_with(|| Error::Provider(format!("the reply had no {name} section")));
+                }
             }
         }
     }
-    if texts.is_empty() {
+    if parts.is_empty() {
         return Err(first_error.unwrap_or_else(|| Error::Provider("No notes were written.".into())));
     }
-    Ok((texts.join("\n"), notices))
+    let notice = first_error.filter(|_| !missing.is_empty()).map(|e| format!("Couldn't write {}: {e}", missing.join(" and ")));
+    Ok((parts.join("\n"), notice))
 }
 
 fn unavailable(e: &Error) -> String {
@@ -220,15 +234,38 @@ mod tests {
         let merged = merge_lanes(&groups, vec![Ok("## Intent\n- i\n## Faults\n- f\n".into()), Ok("## Directions\n- d\n## Questions\n- q".into())]);
         let (text, notices) = merged.unwrap();
         assert_eq!(text, "## Intent\n- i\n## Faults\n- f\n## Directions\n- d\n## Questions\n- q");
-        assert!(notices.is_empty());
+        assert_eq!(notices, None);
     }
 
     #[test]
-    fn a_failed_lane_becomes_a_notice() {
-        let groups = vec![vec!["Intent", "Faults"], vec!["Directions", "Questions"]];
-        let (text, notices) = merge_lanes(&groups, vec![Ok("## Intent\n- i".into()), Err(Error::Provider("rate limited".into()))]).unwrap();
+    fn failed_lanes_become_one_notice_naming_every_missing_section() {
+        let groups = vec![vec!["Intent"], vec!["Faults"], vec!["Directions"], vec!["Questions"]];
+        let results = vec![
+            Ok("## Intent\n- i".into()),
+            Ok("## Faults\n- f".into()),
+            Err(Error::Provider("rate limited".into())),
+            Err(Error::Provider("rate limited again".into())),
+        ];
+        let (text, notice) = merge_lanes(&groups, results).unwrap();
+        assert_eq!(text, "## Intent\n- i\n## Faults\n- f");
+        assert_eq!(notice.as_deref(), Some("Couldn't write Directions and Questions: rate limited"));
+    }
+
+    #[test]
+    fn a_lane_keeps_only_its_own_sections() {
+        let groups = vec![vec!["Intent"], vec!["Faults"]];
+        let results = vec![Ok("## Intent\n- i\n## Faults\n- spurious".into()), Ok("Here you go:\n## Faults\n- f".into())];
+        let (text, notice) = merge_lanes(&groups, results).unwrap();
+        assert_eq!(text, "## Intent\n- i\n## Faults\n- f");
+        assert_eq!(notice, None);
+    }
+
+    #[test]
+    fn a_lane_without_its_heading_counts_as_failed() {
+        let groups = vec![vec!["Intent"], vec!["Faults"]];
+        let (text, notice) = merge_lanes(&groups, vec![Ok("## Intent\n- i".into()), Ok("- a fault with no heading".into())]).unwrap();
         assert_eq!(text, "## Intent\n- i");
-        assert_eq!(notices, ["Couldn't write Directions and Questions: rate limited"]);
+        assert_eq!(notice.as_deref(), Some("Couldn't write Faults: the reply had no Faults section"));
     }
 
     #[test]

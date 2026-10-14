@@ -60,7 +60,7 @@ React (Vite, Tailwind)               Rust
 
 **Live analysis:** the UI waits for a pause (configurable), sends the draft, and streams the reply into four sections. A new request aborts the previous one in Rust (which kills the `claude` process too), and stale replies are dropped by request id. If you keep typing, the last notes stay visible and the rule beside them turns dashed.
 
-With the Claude or API providers, the four sections are written by up to four agents at once (`agents.maxAgents` in settings, default 4; `agents.parallelNotes: false` turns it off). Each agent is a separate model call, so this uses more of your subscription or API budget per pause.
+Optionally, the four sections can be written by up to four agents at once: set `agents.parallelNotes: true` in settings (`agents.maxAgents`, default 4, caps it). It's off by default because, measured with Claude Code, 4 agents finished *slower* than 1 (each call's start-up dominates) while using 4× the subscription. Each agent is a separate model call.
 
 ## Design decisions
 
