@@ -35,6 +35,7 @@ pub struct ClaudeCli {
 /// tools to the project and refuses bypassPermissions, and
 /// `--strict-mcp-config` without `--mcp-config` starts no MCP servers.
 fn args(model: &str, req: &ChatRequest) -> Vec<String> {
+    let turns = req.max_turns.unwrap_or(if req.allow_repo_tools { 40 } else { 1 }).to_string();
     let mut a: Vec<String> = [
         "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
         "--model", model, "--restricted", "--strict-mcp-config",
@@ -43,12 +44,12 @@ fn args(model: &str, req: &ChatRequest) -> Vec<String> {
     .to_vec();
     if req.allow_repo_tools {
         // Keep Claude Code's own system prompt: it knows how to explore repos.
-        a.extend(["--append-system-prompt", req.system.as_str(), "--max-turns", "40"].map(String::from));
+        a.extend(["--append-system-prompt", req.system.as_str(), "--max-turns", turns.as_str()].map(String::from));
         a.extend(["--tools", READ_ONLY_TOOLS, "--allowedTools", READ_ONLY_TOOLS].map(String::from));
     } else {
         // Live analysis: replace the system prompt, single turn, no tools at all.
         // Smaller prompt = faster first token while the user types.
-        a.extend(["--system-prompt", req.system.as_str(), "--max-turns", "1", "--tools", ""].map(String::from));
+        a.extend(["--system-prompt", req.system.as_str(), "--max-turns", turns.as_str(), "--tools", ""].map(String::from));
     }
     a
 }
@@ -219,7 +220,7 @@ mod tests {
     }
 
     fn request(allow_repo_tools: bool) -> ChatRequest {
-        ChatRequest { system: "sys".into(), user: "u".into(), max_tokens: 900, cwd: None, allow_repo_tools }
+        ChatRequest { system: "sys".into(), user: "u".into(), max_tokens: 900, cwd: None, allow_repo_tools, max_turns: None }
     }
 
     fn after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -250,5 +251,12 @@ mod tests {
     fn an_old_cli_gets_an_update_hint() {
         assert!(cli_error(None, "error: unknown option '--restricted'").contains("claude update"));
         assert_eq!(cli_error(Some("boom"), ""), "Claude Code failed: boom");
+    }
+
+    #[test]
+    fn a_turn_limit_overrides_the_default() {
+        let req = ChatRequest { max_turns: Some(20), ..request(true) };
+        assert_eq!(after(&args("sonnet", &req), "--max-turns"), Some("20"));
+        assert_eq!(after(&args("sonnet", &request(true)), "--max-turns"), Some("40"));
     }
 }

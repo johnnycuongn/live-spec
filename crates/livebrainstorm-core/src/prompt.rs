@@ -2,6 +2,7 @@
 //! LiveBrainstorm's behaviour is a one-file change.
 
 use crate::llm::{ChatRequest, Provider};
+use crate::project::explore::{Note, Slice};
 use crate::project::{digest, ProjectIndex, Snippet};
 
 /// Headings the UI splits the analysis on. Keep in sync with `src/lib/sections.ts`.
@@ -87,6 +88,7 @@ pub fn brief_request(index: &ProjectIndex, provider: &Provider) -> ChatRequest {
             max_tokens: 4_000,
             cwd: Some(index.root.clone()),
             allow_repo_tools: true,
+            max_turns: None,
         };
     }
 
@@ -97,6 +99,69 @@ pub fn brief_request(index: &ProjectIndex, provider: &Provider) -> ChatRequest {
         max_tokens: if local { 1_200 } else { 3_000 },
         cwd: None,
         allow_repo_tools: false,
+        max_turns: None,
+    }
+}
+
+const EXPLORER_NOTES: &str = "\
+Write at most 400 words of Markdown notes: ## Modules (`path`: responsibility), ## Flows, ## Conventions, \
+## Features and gaps. Cite paths. Output only the notes.";
+
+/// One of several explorers mapping a slice of the repo for the brief.
+pub fn explorer_request(index: &ProjectIndex, provider: &Provider, slice: &Slice, agent: usize, agents: usize) -> ChatRequest {
+    let paths = slice.prefixes.join(", ");
+    if provider.can_explore_repo() {
+        return ChatRequest {
+            system: format!(
+                "You are agent {agent} of {agents} mapping this codebase in parallel. Explore only: {paths}. \
+                 Others cover the rest. Use read-only tools; don't read every file. {EXPLORER_NOTES}"
+            ),
+            user: format!("Map your part of the project \"{}\".", index.name),
+            max_tokens: 1_500,
+            cwd: Some(index.root.clone()),
+            allow_repo_tools: true,
+            max_turns: Some(20),
+        };
+    }
+    let budget = provider.context_budget_chars() * 3 / 4;
+    ChatRequest {
+        system: format!(
+            "You are agent {agent} of {agents} mapping part of a codebase ({paths}) from the excerpts provided. {EXPLORER_NOTES}"
+        ),
+        user: format!("<project name=\"{}\">\n{}\n</project>", index.name, digest::build_slice(index, &slice.prefixes, budget)),
+        max_tokens: 1_000,
+        cwd: None,
+        allow_repo_tools: false,
+        max_turns: None,
+    }
+}
+
+/// Combines the explorers' notes into the brief. No tools: everything it
+/// needs is in the message.
+pub fn merge_request(index: &ProjectIndex, provider: &Provider, notes: &[Note], unmapped: &[String]) -> ChatRequest {
+    let format = BRIEF_FORMAT.replace("{WORDS}", "1,200");
+    let mut user = format!(
+        "<project name=\"{}\">\n{}\n</project>\n",
+        index.name,
+        digest::overview(index, provider.context_budget_chars() / 4)
+    );
+    for n in notes {
+        user.push_str(&format!("<notes agent=\"{}\" paths=\"{}\">\n{}\n</notes>\n", n.agent, n.prefixes.join(", "), n.text));
+    }
+    if !unmapped.is_empty() {
+        user.push_str(&format!("<unmapped>{}</unmapped>\n", unmapped.join(", ")));
+    }
+    ChatRequest {
+        system: format!(
+            "You are combining notes from {} agents who each mapped part of a codebase into one project brief. \
+             If <unmapped> lists paths, say under ## Gaps and TODOs that they were not mapped. {format}",
+            notes.len()
+        ),
+        user,
+        max_tokens: 4_000,
+        cwd: None,
+        allow_repo_tools: false,
+        max_turns: None,
     }
 }
 
@@ -139,6 +204,7 @@ pub fn analysis_request(
         // CWD lets Claude Code pick up the project's CLAUDE.md conventions.
         cwd: index.map(|i| i.root.clone()),
         allow_repo_tools: false,
+        max_turns: None,
     }
 }
 
@@ -307,5 +373,51 @@ when the context doesn't cover something, say so instead of guessing. Never rest
         assert_eq!(names(4), ["Intent", "Faults", "Directions", "Questions"]);
         assert_eq!(names(8), names(4));
         assert_eq!(names(0), names(1));
+    }
+
+    use crate::llm::{AnthropicApi, ClaudeCli};
+    use crate::project::explore::{Note, Slice};
+    use crate::project::scan::tests::fixture;
+
+    fn claude() -> Provider {
+        Provider::ClaudeCli(ClaudeCli { binary: "claude".into(), model: "sonnet".into(), path_env: None })
+    }
+
+    fn api() -> Provider {
+        Provider::AnthropicApi(AnthropicApi { api_key: "k".into(), model: "m".into(), http: reqwest::Client::new() })
+    }
+
+    #[test]
+    fn claude_explorers_map_only_their_slice_with_20_turns() {
+        let idx = crate::project::scan(fixture().path()).unwrap();
+        let slice = Slice { prefixes: vec!["src/billing/".into(), "src/cart/".into()], files: 2, bytes: 100 };
+        let req = explorer_request(&idx, &claude(), &slice, 2, 4);
+        assert!(req.allow_repo_tools && req.cwd.as_deref() == Some(idx.root.as_path()));
+        assert_eq!(req.max_turns, Some(20));
+        assert!(req.system.contains("agent 2 of 4") && req.system.contains("src/billing/, src/cart/"));
+        assert!(req.system.contains("at most 400 words") && req.system.contains("## Modules"));
+    }
+
+    #[test]
+    fn api_explorers_get_their_slice_digest() {
+        let idx = crate::project::scan(fixture().path()).unwrap();
+        let slice = Slice { prefixes: vec!["src/billing/".into()], files: 1, bytes: 10 };
+        let req = explorer_request(&idx, &api(), &slice, 1, 2);
+        assert!(!req.allow_repo_tools && req.cwd.is_none());
+        assert!(req.user.contains("createInvoice") && !req.user.contains("CartStore"));
+    }
+
+    #[test]
+    fn the_merge_gets_every_note_the_overview_and_the_gaps() {
+        let idx = crate::project::scan(fixture().path()).unwrap();
+        let notes = vec![
+            Note { agent: 1, prefixes: vec!["src/billing/".into()], text: "## Modules\n- billing".into() },
+            Note { agent: 3, prefixes: vec!["src/cart/".into()], text: "## Modules\n- cart".into() },
+        ];
+        let req = merge_request(&idx, &claude(), &notes, &["docs/".into()]);
+        assert!(!req.allow_repo_tools && req.max_turns.is_none() && req.cwd.is_none());
+        assert!(req.user.contains("<notes agent=\"1\" paths=\"src/billing/\">") && req.user.contains("- cart"));
+        assert!(req.user.contains("<unmapped>docs/</unmapped>") && req.user.contains("An online shop"));
+        assert!(req.system.contains("## Purpose") && req.system.contains("1,200 words") && req.system.contains("Gaps and TODOs"));
     }
 }

@@ -27,6 +27,8 @@ pub struct ChatRequest {
     pub cwd: Option<PathBuf>,
     /// Allow read-only repo tools (Read/Glob/Grep). Claude CLI only.
     pub allow_repo_tools: bool,
+    /// Claude CLI turn limit; None means 40 with repo tools, 1 without.
+    pub max_turns: Option<u32>,
 }
 
 /// What a provider emits while streaming.
