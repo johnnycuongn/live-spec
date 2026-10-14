@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { api, errorMessage, type LocalStatus, type ProviderSettings, type Settings } from "../lib/ipc";
+import {
+  api,
+  errorMessage,
+  type AgentSettings,
+  type JevSettings,
+  type JevStatus,
+  type LocalStatus,
+  type ProviderSettings,
+  type Settings,
+} from "../lib/ipc";
 import { formatBytes, pauseDownload, startDownload, useDownloads } from "../lib/downloads";
-import { Button, Eyebrow, Field, cx, inputClass } from "./ui";
+import { agentHint, clampAgents, jevHint, jevUsable, keySourceLabel, PARALLEL_BRIEF_HINT, PARALLEL_NOTES_HINT } from "../lib/settingsHints";
+import { Button, Eyebrow, Field, Toggle, cx, inputClass } from "./ui";
 
 interface Props {
   settings: Settings;
@@ -45,6 +55,8 @@ export function SettingsDialog({ settings, onSave, onClose }: Props) {
     setDraft((d) => ({ ...d, provider: d.provider.kind === kind ? d.provider : DEFAULTS[kind] }));
   const patch = (fields: Partial<ProviderSettings>) =>
     setDraft((d) => ({ ...d, provider: { ...d.provider, ...fields } as ProviderSettings }));
+  const updateAgents = (a: Partial<AgentSettings>) => setDraft((d) => ({ ...d, agents: { ...d.agents, ...a } }));
+  const updateJev = (j: Partial<JevSettings>) => setDraft((d) => ({ ...d, jev: { ...d.jev, ...j } }));
 
   const save = async () => {
     setSaving(true);
@@ -90,6 +102,14 @@ export function SettingsDialog({ settings, onSave, onClose }: Props) {
           {p.kind === "claudeCli" && <ClaudeCliFields p={p} patch={patch} />}
           {p.kind === "anthropicApi" && <ApiFields p={p} patch={patch} />}
           {p.kind === "local" && <LocalFields modelId={p.modelId} onPick={(modelId) => patch({ modelId })} />}
+        </Group>
+
+        <Group title="Agents">
+          <AgentFields settings={draft} update={updateAgents} />
+        </Group>
+
+        <Group title="Jev (TypeSafe)">
+          <JevFields settings={draft} update={updateJev} />
         </Group>
 
         <Group title="Timing">
@@ -313,6 +333,93 @@ function DownloadRow(props: {
         </Button>
       )}
       {s?.error && <small className="basis-full text-fault">{s.error}</small>}
+    </div>
+  );
+}
+
+function AgentFields({ settings, update }: { settings: Settings; update: (a: Partial<AgentSettings>) => void }) {
+  const a = settings.agents;
+  const kind = settings.provider.kind;
+  const local = kind === "local";
+  return (
+    <div className="grid gap-3">
+      <Field label={`Agents at once: ${local ? 1 : a.maxAgents}`}>
+        <input
+          type="range"
+          className="w-full accent-accent"
+          min={1}
+          max={8}
+          step={1}
+          value={a.maxAgents}
+          disabled={local}
+          onChange={(e) => update({ maxAgents: clampAgents(Number(e.target.value)) })}
+        />
+      </Field>
+      <Toggle
+        label="Write notes with parallel agents"
+        hint={PARALLEL_NOTES_HINT}
+        checked={a.parallelNotes && !local}
+        disabled={local}
+        onChange={(parallelNotes) => update({ parallelNotes })}
+      />
+      <Toggle
+        label="Map the project with parallel agents"
+        hint={PARALLEL_BRIEF_HINT}
+        checked={a.parallelBrief && !local}
+        disabled={local}
+        onChange={(parallelBrief) => update({ parallelBrief })}
+      />
+      <p className="text-xs text-muted">{agentHint(kind)}</p>
+    </div>
+  );
+}
+
+function JevFields({ settings, update }: { settings: Settings; update: (j: Partial<JevSettings>) => void }) {
+  const [status, setStatus] = useState<JevStatus | null>(null);
+  const [key, setKey] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const refresh = () => api.jevStatus().then(setStatus, (e) => setNote(errorMessage(e)));
+  useEffect(() => void refresh(), []);
+
+  const kind = settings.provider.kind;
+  const source = status?.source ?? null;
+  const inKeychain = source === "keychain";
+  const usable = jevUsable(source, kind);
+  const j = settings.jev;
+
+  const saveKey = async () => {
+    try {
+      await api.setJevKey(key);
+      setNote(key.trim() ? "Key saved to your Keychain." : "Key removed from your Keychain.");
+      setKey("");
+      await refresh();
+    } catch (e) {
+      setNote(errorMessage(e));
+    }
+  };
+
+  return (
+    <div className="grid gap-3">
+      <Field label="TypeSafe API key">
+        <div className="flex gap-2">
+          <input
+            type="password"
+            className={inputClass}
+            value={key}
+            placeholder={inKeychain ? "Paste a new key to replace it" : "Paste a key from console.typesafe.ai/keys"}
+            onChange={(e) => setKey(e.target.value)}
+          />
+          <Button onClick={saveKey} disabled={!key.trim() && !inKeychain}>
+            {key.trim() || !inKeychain ? "Save key" : "Remove key"}
+          </Button>
+        </div>
+        <small className="text-xs text-muted">{status ? keySourceLabel(source) : "Checking for a key…"}</small>
+        {note && <small className="text-xs text-muted">{note}</small>}
+      </Field>
+      <Toggle label="Skip re-analysis when an edit doesn't change the idea" checked={j.gate && usable} disabled={!usable} onChange={(gate) => update({ gate })} />
+      <Toggle label="Let Jev pick the code the notes see" checked={j.rerank && usable} disabled={!usable} onChange={(rerank) => update({ rerank })} />
+      <Toggle label="Check notes against the code" checked={j.check && usable} disabled={!usable} onChange={(check) => update({ check })} />
+      <p className="text-xs text-muted">{jevHint(source, kind)}</p>
     </div>
   );
 }

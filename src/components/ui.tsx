@@ -48,3 +48,32 @@ export function Eyebrow({ children, dot }: { children: ReactNode; dot?: string }
     </span>
   );
 }
+
+/** An on/off switch. A real checkbox underneath, so keyboard and screen readers work. */
+export function Toggle(props: { checked: boolean; onChange: (on: boolean) => void; label: string; hint?: string; disabled?: boolean }) {
+  return (
+    <label className={cx("flex items-start gap-3", props.disabled ? "opacity-50" : "cursor-pointer")}>
+      <input
+        type="checkbox"
+        role="switch"
+        className="peer sr-only"
+        checked={props.checked}
+        disabled={props.disabled}
+        onChange={(e) => props.onChange(e.target.checked)}
+      />
+      <span
+        aria-hidden
+        className={cx(
+          "relative mt-0.5 h-5 w-9 shrink-0 rounded-full transition-colors peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-accent",
+          props.checked ? "bg-accent" : "bg-line",
+        )}
+      >
+        <span className={cx("absolute top-0.5 left-0.5 size-4 rounded-full bg-page transition-transform", props.checked && "translate-x-4")} />
+      </span>
+      <span className="grid gap-0.5">
+        <span className="text-[13px] text-ink">{props.label}</span>
+        {props.hint && <span className="text-xs text-muted">{props.hint}</span>}
+      </span>
+    </label>
+  );
+}
