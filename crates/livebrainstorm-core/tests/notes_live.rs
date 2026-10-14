@@ -29,7 +29,7 @@ async fn four_lanes_vs_one() {
         let started = Instant::now();
         let mut lanes = Vec::new();
         for sections in &groups {
-            let req = prompt::analysis_request(draft, Some(&index), None, &snippets, &provider, sections);
+            let req = prompt::analysis_request(draft, Some(&index), None, &snippets, &provider, sections, "");
             let (provider, first_text) = (&provider, &first_text);
             lanes.push(async move {
                 let mut sink = |chunk: Chunk| {

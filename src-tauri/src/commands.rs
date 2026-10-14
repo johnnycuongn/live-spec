@@ -274,7 +274,7 @@ pub async fn analyze(app: AppHandle, draft: String, previous_draft: Option<Strin
         let mut faults_tx = Some(faults_tx);
         let mut lanes = Vec::new();
         for (lane, sections) in groups.iter().enumerate() {
-            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, sections);
+            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, sections, "");
             let tx = if sections.contains(&"Faults") { faults_tx.take() } else { None };
             let (provider, on_event) = (&provider, &on_event);
             lanes.push(async move {

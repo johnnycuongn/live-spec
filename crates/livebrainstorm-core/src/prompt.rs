@@ -33,6 +33,9 @@ const ANALYSIS_RULES: &str = "
 Rules: bullets only, at most 3 per section, each under 35 words. Ground claims in the project context; \
 when the context doesn't cover something, say so instead of guessing. Never restate the draft. Do not use tools.";
 
+/// Session instructions longer than this are clipped (small local models keep less).
+pub const MAX_INSTRUCTION_CHARS: usize = 4_000;
+
 /// Which sections each agent writes, for `n` agents (see the spec's table).
 pub fn section_groups(n: usize) -> Vec<Vec<&'static str>> {
     let [intent, faults, directions, questions] = SECTIONS;
@@ -44,9 +47,10 @@ pub fn section_groups(n: usize) -> Vec<Vec<&'static str>> {
     }
 }
 
-/// The system prompt for an agent writing `sections`. With all four it is
+/// The system prompt for an agent writing `sections`, steered by the user's
+/// session instructions. With all four sections and no instructions it is
 /// exactly the single-agent prompt.
-pub fn analysis_system(sections: &[&str]) -> String {
+pub fn analysis_system(sections: &[&str], instructions: &str) -> String {
     let lead = match sections.len() {
         1 => "exactly this one section and nothing else".to_owned(),
         k => format!("exactly these {} sections, in this order, and nothing else", ["two", "three", "four"][k.clamp(2, 4) - 2]),
@@ -58,6 +62,15 @@ pub fn analysis_system(sections: &[&str]) -> String {
     }
     if sections.len() < SECTIONS.len() {
         prompt.push_str("\n\nThe other parts of the notes are written separately; write only the sections above.");
+    }
+    // Before the rules, which win: instructions steer what the notes say, never their shape.
+    let instructions = instructions.trim();
+    if !instructions.is_empty() {
+        prompt.push_str(&format!(
+            "\n\n<session_instructions>\n{instructions}\n</session_instructions>\n\
+             These instructions come from the person drafting. Follow them, but the headings above, \
+             their order, and the rules below always win."
+        ));
     }
     prompt.push_str(ANALYSIS_RULES);
     prompt
@@ -173,6 +186,7 @@ pub fn analysis_request(
     snippets: &[Snippet],
     provider: &Provider,
     sections: &[&str],
+    instructions: &str,
 ) -> ChatRequest {
     let budget = provider.context_budget_chars();
     let mut project = String::new();
@@ -199,7 +213,7 @@ pub fn analysis_request(
     }
 
     ChatRequest {
-        system: analysis_system(sections),
+        system: analysis_system(sections, clip_chars(instructions, MAX_INSTRUCTION_CHARS.min(budget / 10))),
         user: format!("{project}<draft>\n{}\n</draft>", shape_draft(draft)),
         max_tokens: 900,
         // CWD lets Claude Code pick up the project's CLAUDE.md conventions.
@@ -274,6 +288,11 @@ fn clip(s: &str, max: usize) -> &str {
     &s[..floor_boundary(s, max.min(s.len()))]
 }
 
+/// The first `max` characters (not bytes), so the editor's counter matches.
+fn clip_chars(s: &str, max: usize) -> &str {
+    s.char_indices().nth(max).map_or(s, |(i, _)| &s[..i])
+}
+
 fn floor_boundary(s: &str, i: usize) -> usize {
     (0..=i.min(s.len())).rev().find(|j| s.is_char_boundary(*j)).unwrap_or(0)
 }
@@ -302,7 +321,7 @@ mod tests {
 
     #[test]
     fn analysis_without_project_still_works() {
-        let req = analysis_request("add caching to search", None, None, &[], &local(), &SECTIONS);
+        let req = analysis_request("add caching to search", None, None, &[], &local(), &SECTIONS, "");
         assert!(req.user.contains("No project selected") && req.cwd.is_none());
         for s in SECTIONS {
             assert!(req.system.contains(&format!("## {s}")));
@@ -349,20 +368,55 @@ when the context doesn't cover something, say so instead of guessing. Never rest
 
     #[test]
     fn all_four_sections_is_todays_prompt() {
-        assert_eq!(analysis_system(&SECTIONS), TODAYS_PROMPT);
+        assert_eq!(analysis_system(&SECTIONS, ""), TODAYS_PROMPT);
     }
 
     #[test]
     fn a_lane_prompt_has_only_its_own_headings() {
-        let faults = analysis_system(&["Faults"]);
+        let faults = analysis_system(&["Faults"], "");
         assert!(faults.contains("## Faults") && faults.contains("exactly this one section"));
         for other in ["## Intent", "## Directions", "## Questions"] {
             assert!(!faults.contains(other), "{other}");
         }
         assert!(faults.contains("written separately"), "tells the agent the rest is someone else's job");
-        let pair = analysis_system(&["Directions", "Questions"]);
+        let pair = analysis_system(&["Directions", "Questions"], "");
         assert!(pair.contains("exactly these two sections") && pair.contains("## Directions") && pair.contains("## Questions"));
         assert!(!pair.contains("## Faults"));
+    }
+
+    #[test]
+    fn blank_instructions_leave_the_prompt_unchanged() {
+        assert_eq!(analysis_system(&SECTIONS, ""), TODAYS_PROMPT);
+        assert_eq!(analysis_system(&SECTIONS, "  \n\t "), TODAYS_PROMPT);
+    }
+
+    #[test]
+    fn instructions_sit_between_the_sections_and_the_rules() {
+        let p = analysis_system(&SECTIONS, "  Focus on concurrency.\n");
+        let block = p
+            .find("<session_instructions>\nFocus on concurrency.\n</session_instructions>\n")
+            .expect("the block is present, with the text trimmed");
+        assert!(p.find("## Questions").unwrap() < block, "after the section guide");
+        assert!(block < p.find("Rules: bullets only").unwrap(), "before the rules, so the rules win");
+        assert!(p.contains("Follow them, but the headings above, their order, and the rules below always win."));
+        let lane = analysis_system(&["Faults"], "Focus on concurrency.");
+        assert!(lane.find("written separately").unwrap() < lane.find("<session_instructions>").unwrap());
+    }
+
+    #[test]
+    fn every_lane_gets_the_same_clipped_instructions() {
+        let kept = |system: &str| {
+            let inner = system.split("<session_instructions>\n").nth(1).unwrap();
+            inner.split("\n</session_instructions>").next().unwrap().chars().count()
+        };
+        let long = "é".repeat(5_000);
+        for sections in section_groups(4) {
+            let req = analysis_request("add caching to search", None, None, &[], &claude(), &sections, &long);
+            assert_eq!(kept(&req.system), MAX_INSTRUCTION_CHARS, "{sections:?}");
+        }
+        // A 4,096-token local model has a 6,144-character budget; it keeps a tenth.
+        let req = analysis_request("add caching to search", None, None, &[], &local(), &SECTIONS, &long);
+        assert_eq!(kept(&req.system), 614);
     }
 
     #[test]
