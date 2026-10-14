@@ -25,9 +25,23 @@ export type UiEvent =
   | { type: "started" }
   | { type: "skipped" };
 
+/** Mirrors `Effort` in settings.rs; null means the model's default. */
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/** Mirrors `ClaudeAuth`: Claude Code's own login, or the keychain API key. */
+export type ClaudeAuth = "login" | "apiKey";
+
 export type ProviderSettings =
-  | { kind: "claudeCli"; binaryPath: string | null; fastModel: string; deepModel: string }
-  | { kind: "anthropicApi"; fastModel: string; deepModel: string }
+  | {
+      kind: "claudeCli";
+      binaryPath: string | null;
+      fastModel: string;
+      deepModel: string;
+      fastEffort: Effort | null;
+      deepEffort: Effort | null;
+      auth: ClaudeAuth;
+    }
+  | { kind: "anthropicApi"; fastModel: string; deepModel: string; fastEffort: Effort | null; deepEffort: Effort | null }
   | { kind: "local"; modelId: string };
 
 export interface JevSettings {

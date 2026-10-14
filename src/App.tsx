@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, type ProjectSummary, type Settings } from "./lib/ipc";
 import { useLiveAnalysis } from "./lib/useLiveAnalysis";
+import { providerLabel } from "./lib/providerOptions";
 import { activityLine } from "./lib/brief";
 import { TopBar } from "./components/TopBar";
 import { DraftPane } from "./components/DraftPane";
@@ -11,14 +12,6 @@ import { SettingsDialog } from "./components/SettingsDialog";
 
 const LAST_PROJECT = "livebrainstorm.lastProject";
 const draftKey = (root: string | undefined) => `livebrainstorm.draft.${root ?? "none"}`;
-
-function providerLabel(s: Settings | null) {
-  if (!s) return "Settings";
-  const p = s.provider;
-  if (p.kind === "claudeCli") return `Claude Code, ${p.fastModel}`;
-  if (p.kind === "anthropicApi") return `API, ${p.fastModel}`;
-  return `Local, ${p.modelId}`;
-}
 
 export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);

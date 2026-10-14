@@ -11,6 +11,7 @@ import {
 } from "../lib/ipc";
 import { formatBytes, pauseDownload, startDownload, useDownloads } from "../lib/downloads";
 import { agentHint, clampAgents, clampedAgents, jevHint, jevUsable, keySourceLabel, PARALLEL_BRIEF_HINT, PARALLEL_NOTES_HINT } from "../lib/settingsHints";
+import { CLAUDE_ALIASES } from "../lib/providerOptions";
 import { Button, Eyebrow, Field, Toggle, cx, inputClass } from "./ui";
 
 interface Props {
@@ -20,12 +21,10 @@ interface Props {
 }
 
 const DEFAULTS: Record<ProviderSettings["kind"], ProviderSettings> = {
-  claudeCli: { kind: "claudeCli", binaryPath: null, fastModel: "haiku", deepModel: "sonnet" },
-  anthropicApi: { kind: "anthropicApi", fastModel: "claude-haiku-5-5", deepModel: "claude-sonnet-5-5" },
+  claudeCli: { kind: "claudeCli", binaryPath: null, fastModel: "haiku", deepModel: "sonnet", fastEffort: null, deepEffort: null, auth: "login" },
+  anthropicApi: { kind: "anthropicApi", fastModel: "claude-haiku-5-5", deepModel: "claude-sonnet-5-5", fastEffort: null, deepEffort: null },
   local: { kind: "local", modelId: "qwen3-4b-instruct" },
 };
-
-const CLAUDE_ALIASES = ["haiku", "sonnet", "opus"];
 
 function Group({ title, children }: { title: string; children: ReactNode }) {
   return (
