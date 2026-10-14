@@ -90,11 +90,13 @@ export class TabSession {
 
   /**
    * Starts from the tab's latest analysis. A draft that matches it starts no
-   * run; partial notes are never the gate's comparison point.
+   * run; partial notes are never the gate's comparison point. It forgets the
+   * context, so callers must call setContext again afterwards.
    */
   restore(tab: Tab): void {
     this.clearTimer();
     this.requestId++; // events from a run before the restore no longer apply
+    this.historyRequest++; // ...and so does a history fetch from before it
     const latest = tab.history[0];
     this.draft = tab.draft;
     this.history = tab.history;
@@ -206,20 +208,26 @@ export class TabSession {
     this.analysis = startAnalysis(this.analysis, text);
     this.emit();
     const mine = () => id === this.requestId;
-    this.deps
-      .analyze(this.id, text, previousDraftFor(this.lastAnalyzed, rerun, ctx), this.instructions, ctx, (ev) => {
+    const fail = (e: unknown) => {
+      if (!mine()) return;
+      this.analysis = { ...this.analysis, status: "error", error: errorMessage(e) };
+      this.emit();
+    };
+    let pending: Promise<void>;
+    try {
+      pending = this.deps.analyze(this.id, text, previousDraftFor(this.lastAnalyzed, rerun, ctx), this.instructions, ctx, (ev) => {
         if (!mine()) return;
         this.lastAnalyzed = lastAnalyzedAfter(this.lastAnalyzed, ev, text, ctx);
         if (ev.type === "started") this.viewing = 0; // live streaming always shows the latest
         this.analysis = applyEvent(this.analysis, ev);
         this.emit();
         if (ev.type === "done") this.refreshHistory();
-      })
-      .catch((e) => {
-        if (!mine()) return;
-        this.analysis = { ...this.analysis, status: "error", error: errorMessage(e) };
-        this.emit();
       });
+    } catch (e) {
+      fail(e); // a synchronous throw ends like a rejection, not a tab stuck on "thinking"
+      return;
+    }
+    pending.catch(fail);
   }
 
   /** `analyze` records the snapshot before it sends `done`, so this fetch includes it. */
@@ -230,8 +238,10 @@ export class TabSession {
     getTab(this.id).then(
       (tab) => {
         if (n !== this.historyRequest) return; // a newer fetch, or dispose, won
+        // `viewing` is an index and `done` prepends (evicting the oldest at 5): keep the snapshot on screen.
+        const viewed = this.viewing > 0 ? this.history[this.viewing]?.id : undefined;
         this.history = tab.history;
-        this.viewing = Math.min(this.viewing, Math.max(tab.history.length - 1, 0));
+        this.viewing = viewed === undefined ? 0 : Math.max(tab.history.findIndex((h) => h.id === viewed), 0);
         this.emit();
       },
       () => {}, // the notes on screen are right; the next `done` refetches

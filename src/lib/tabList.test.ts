@@ -50,6 +50,11 @@ describe("groupTabs", () => {
     const names = groupTabs([t("x", "/work/app"), t("y", "/oss/app"), t("z", "/work/api")]).map((g) => g.name);
     expect(names).toEqual(["app · work", "app · oss", "api"]);
   });
+
+  it("adds more path segments when the parent folders are also the same", () => {
+    const names = groupTabs([t("x", "/a/work/app"), t("y", "/b/work/app"), t("z", "/b/oss/app")]).map((g) => g.name);
+    expect(names).toEqual(["app · a/work", "app · b/work", "app · oss"]);
+  });
 });
 
 describe("tab order", () => {

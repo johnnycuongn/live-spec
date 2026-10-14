@@ -28,7 +28,8 @@ export const groupKey = (root: string | null) => root ?? "";
  * Groups tabs by project in order of first appearance; inside a group, tabs
  * keep the list's order. `create_tab` appends to the list, so a new tab joins
  * the end of its group. Two projects with the same folder name also show
- * their parent folder ("app · work").
+ * their parent folder ("app · work"), and more folders above it
+ * while that still leaves two the same ("app · a/work").
  */
 export function groupTabs<T extends { root: string | null }>(list: T[]): TabGroup<T>[] {
   const groups = new Map<string | null, TabGroup<T>>();
@@ -41,12 +42,19 @@ export function groupTabs<T extends { root: string | null }>(list: T[]): TabGrou
     g.tabs.push(t);
   }
   const all = [...groups.values()];
+  // The last `k` folders above a project's own, joined: "work", then "a/work", and so on.
+  const suffix = (root: string, k: number) => segments(root).slice(0, -1).slice(-k).join("/");
   for (const g of all) {
     if (g.root === null) continue;
-    const base = projectName(g.root);
-    const twin = all.some((o) => o !== g && o.root !== null && projectName(o.root) === base);
-    const parent = segments(g.root).at(-2);
-    if (twin && parent) g.name = `${base} · ${parent}`;
+    const root = g.root;
+    const base = projectName(root);
+    const twins = all.filter((o) => o !== g && o.root !== null && projectName(o.root) === base);
+    const depth = segments(root).length - 1; // folders above the project
+    if (twins.length === 0 || depth < 1) continue;
+    // The shortest suffix no twin shares, or all the folders there are.
+    let k = 1;
+    while (k < depth && twins.some((o) => suffix(o.root as string, k) === suffix(root, k))) k++;
+    g.name = `${base} · ${suffix(root, k)}`;
   }
   return all;
 }

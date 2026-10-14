@@ -242,6 +242,68 @@ describe("history", () => {
   });
 });
 
+describe("hardening", () => {
+  const draft2 = `${DRAFT}, and alert after three`;
+  const run = (calls: ReturnType<typeof harness>["calls"], s: TabSession, n = 0) => {
+    s.setDraft(draft2 + "!".repeat(n));
+    vi.advanceTimersByTime(1000);
+    calls[n].emit({ type: "done", text: "## Intent\n- x" });
+  };
+
+  it("a history being browsed stays on the same snapshot when done prepends a new one", async () => {
+    const three = [snap({ id: 3 }), snap({ id: 2 }), snap({ id: 1 })];
+    const getTab = vi.fn(async () => tab({ history: [snap({ id: 4 }), ...three] }));
+    const { s, calls } = harness(tab({ history: three }), getTab);
+    s.view(1); // snapshot 2
+    run(calls, s);
+    await settle();
+    expect(s.getState().history.map((h) => h.id)).toEqual([4, 3, 2, 1]);
+    expect(s.getState().viewing).toBe(2);
+    expect(s.getState().history[s.getState().viewing].id).toBe(2);
+  });
+
+  it("falls back to the latest when the viewed snapshot was evicted, and stays live when live", async () => {
+    const five = [5, 4, 3, 2, 1].map((id) => snap({ id }));
+    const getTab = vi.fn(async () => tab({ history: [6, 5, 4, 3, 2].map((id) => snap({ id })) }));
+    const { s, calls } = harness(tab({ history: five }), getTab);
+    s.view(4); // snapshot 1, about to be evicted
+    run(calls, s);
+    await settle();
+    expect(s.getState().viewing).toBe(0);
+
+    const live = harness(tab({ history: five }), getTab);
+    run(live.calls, live.s);
+    await settle();
+    expect(live.s.getState().viewing).toBe(0);
+  });
+
+  it("restore() discards a history fetch that started before it", async () => {
+    const resolvers: ((t: Tab) => void)[] = [];
+    const getTab = vi.fn(() => new Promise<Tab>((resolve) => resolvers.push(resolve)));
+    const { s, calls } = harness(tab(), getTab);
+    run(calls, s);
+    s.restore(tab({ history: [snap({ id: 9 })] }));
+    resolvers[0](tab({ history: [snap({ id: 10 }), snap({ id: 1 })] }));
+    await settle();
+    expect(s.getState().history.map((h) => h.id)).toEqual([9]);
+  });
+
+  it("an analyze that throws synchronously ends in the error state like a rejection", () => {
+    const deps: TabSessionDeps = {
+      analyze: () => {
+        throw new Error("no IPC");
+      },
+      saveDraft: vi.fn(),
+      debounceMs: () => 1000,
+    };
+    const s = new TabSession(tab({ draft: "", history: [] }), deps);
+    s.setDraft(DRAFT);
+    vi.advanceTimersByTime(1000);
+    expect(s.getState().analysis.status).toBe("error");
+    expect(s.getState().analysis.error).toContain("no IPC");
+  });
+});
+
 describe("requests", () => {
   it("drops events from a superseded request", () => {
     const { s, calls } = harness(tab({ draft: "", history: [] }));

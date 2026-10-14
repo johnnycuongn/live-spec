@@ -45,6 +45,25 @@ export function keyToAction(e: KeyboardEvent): ActionId | null {
   return keyToActionFor(e, IS_MAC);
 }
 
+/** Holding a key auto-repeats it; only stepping through tabs should repeat. */
+const REPEATABLE: ReadonlySet<ActionId> = new Set(["next-tab", "prev-tab"]);
+
+type KeyDown = KeyPress & { repeat?: boolean; preventDefault: () => void };
+
+/**
+ * Runs the handler for a recognised key press and returns whether the key was
+ * taken. An auto-repeat of anything but ⌃Tab is swallowed without running, so
+ * holding ⌘W closes one tab, not all of them.
+ */
+export function dispatchKey(e: KeyDown, handlers: Partial<Record<ActionId, () => void>>, mac: boolean): boolean {
+  const action = keyToActionFor(e, mac);
+  const run = action ? handlers[action] : undefined;
+  if (!action || !run) return false;
+  e.preventDefault();
+  if (!e.repeat || REPEATABLE.has(action)) run();
+  return true;
+}
+
 /**
  * Runs the handler for each recognised key press. Actions without a handler
  * are left to the webview, and nothing fires while a modal dialog (Settings)
@@ -55,11 +74,8 @@ export function useActions(handlers: Partial<Record<ActionId, () => void>>): voi
   current.current = handlers;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const action = keyToAction(e);
-      const run = action ? current.current[action] : undefined;
-      if (!run || document.querySelector("dialog[open]")) return;
-      e.preventDefault();
-      run();
+      if (document.querySelector("dialog[open]")) return;
+      dispatchKey(e, current.current, IS_MAC);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

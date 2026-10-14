@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { keyToActionFor, type KeyPress } from "./actions";
+import { describe, expect, it, vi } from "vitest";
+import { dispatchKey, keyToActionFor, type ActionId, type KeyPress } from "./actions";
 
 const press = (key: string, mods: Partial<Omit<KeyPress, "key">> = {}): KeyPress => ({
   key,
@@ -47,5 +47,43 @@ describe("keyToActionFor", () => {
     expect(keyToActionFor(press("t", { metaKey: true, altKey: true }), true)).toBeNull();
     expect(keyToActionFor(press("t"), true)).toBeNull();
     expect(keyToActionFor(press("t", { metaKey: true, isComposing: true }), true)).toBeNull();
+  });
+});
+
+describe("dispatchKey", () => {
+  const down = (key: string, repeat: boolean, mods: Partial<Omit<KeyPress, "key">> = { metaKey: true }) => ({
+    ...press(key, mods),
+    repeat,
+    preventDefault: vi.fn(),
+  });
+  const handlers = () => {
+    const h = { "close-tab": vi.fn(), "new-tab": vi.fn(), "open-project": vi.fn(), "next-tab": vi.fn(), "prev-tab": vi.fn() };
+    return h as typeof h & Partial<Record<ActionId, () => void>>;
+  };
+
+  it("runs a plain key press", () => {
+    const h = handlers();
+    expect(dispatchKey(down("w", false), h, true)).toBe(true);
+    expect(h["close-tab"]).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores auto-repeat for close, new and open, but still swallows the key", () => {
+    const h = handlers();
+    for (const key of ["w", "t", "o"]) {
+      const e = down(key, true);
+      dispatchKey(e, h, true);
+      expect(e.preventDefault).toHaveBeenCalled();
+    }
+    expect(h["close-tab"]).not.toHaveBeenCalled();
+    expect(h["new-tab"]).not.toHaveBeenCalled();
+    expect(h["open-project"]).not.toHaveBeenCalled();
+  });
+
+  it("lets next-tab and prev-tab repeat", () => {
+    const h = handlers();
+    dispatchKey(down("Tab", true, { ctrlKey: true }), h, true);
+    dispatchKey(down("Tab", true, { ctrlKey: true, shiftKey: true }), h, true);
+    expect(h["next-tab"]).toHaveBeenCalledTimes(1);
+    expect(h["prev-tab"]).toHaveBeenCalledTimes(1);
   });
 });
