@@ -110,12 +110,13 @@ sessions/
   "notices": [],
   "checks": [ /* CheckResult, as in jev/check.rs */ ],
   "checksTotal": 4,
+  "checksFaults": 5,
   "checksStopped": false
 }
 ```
 
 - `context` is the frontend's `analysisContextKey`, passed through `analyze` as an opaque string. It lets the gate keep working after a restart.
-- `checksTotal` comes from the last `checking` event. On restore, `checks.len() < checksTotal` with `checksStopped: false` means the run was cut off. The UI then shows "Checks stopped when you edited.", as it does live.
+- `checksTotal` is the `count` of the last `checking` event and `checksFaults` its `total`, so restored notes read "2 of 5 faults checked" as they did live. On restore, `checks.len() < checksTotal` with `checksStopped: false` means the run was cut off. The UI then shows "Checks stopped when you edited.", as it does live.
 
 ### Ids
 
@@ -134,7 +135,7 @@ sessions/
 |---|---|
 | `workspace()` | Windows and their tabs. On first run, creates `w-1` and reports `fresh: true` |
 | `create_tab(window, root)` | New tab at the end of the window's list, made active |
-| `save_draft(tab, draft)` | Updates `draft` and `updatedAt` |
+| `save_draft(tab, draft)` | Updates `draft` and `updatedAt`. Returns whether the first line changed |
 | `rename_tab(tab, title)` | `None` returns the tab to an automatic title |
 | `record_snapshot(tab, Snapshot) -> id` | Inserts at the front, trims to 5, returns the snapshot id |
 | `update_snapshot(tab, id, f)` | Adds checks, a notice or `checksStopped` to one snapshot; a no-op if it has been trimmed |
@@ -179,7 +180,7 @@ On its first launch, the frontend finds `fresh: true`. It reads every `livebrain
 | `build_brief(root, onEvent)` | See below |
 | `list_workspace(window) -> WorkspaceView` | This window's tabs (summaries plus the full active tab), the shared closed list, and `fresh` |
 | `get_tab(tabId) -> Tab` | The full tab, used when switching to it |
-| `create_tab`, `save_draft`, `rename_tab`, `activate_tab`, `close_tab`, `reopen_tab`, `delete_tab`, `move_tab`, `import_legacy_drafts` | Thin wrappers over `SessionStore` that emit `workspace-changed` |
+| `create_tab`, `save_draft`, `rename_tab`, `activate_tab`, `close_tab`, `reopen_tab`, `delete_tab`, `move_tab`, `import_legacy_drafts` | Thin wrappers over `SessionStore` that emit `workspace-changed`. `save_draft` emits only when the first line changed, the only part of a draft any list shows |
 | `open_window() -> String` | Creates a window (Section 3) |
 | `usage_report(sinceHour) -> Vec<UsageBucket>` | Section 5 |
 
@@ -188,7 +189,7 @@ On its first launch, the frontend finds `fresh: true`. It reads every `livebrain
 - The pipeline is today's, unchanged: provider at `Tier::Fast`, pre-phase (gate and rerank), lanes, merge, fact-check.
 - **Inputs:** the task looks up the tab's `root` in `SessionStore` and takes the index and brief from the registry entry for that root. A tab with no root runs without code context, as today.
 - **Precondition:** an unknown or closed tab fails with "This tab was closed."
-- **Recording:** checks that arrive before `done` collect in a task-local buffer. On `done`, the task calls `record_snapshot` with the text, `partial`, the notices so far, the buffered checks and `checksTotal`. Any later check, notice or `checksStopped` goes to `update_snapshot` with that id.
+- **Recording:** checks that arrive before `done` collect in a task-local buffer. On `done`, the task calls `record_snapshot` with the text, `partial`, the notices so far, the buffered checks, `checksTotal` and `checksFaults`. Any later check, notice or `checksStopped` goes to `update_snapshot` with that id.
   - Skips and errors record nothing.
   - If recording fails, the notes still stream and the user gets one `notice`: "Couldn't save these notes: …".
 
@@ -261,7 +262,7 @@ Tauri's default menu binds ⌘W to *Close Window*, so the app menu is replaced:
 
 ### Moving a tab
 
-- The tab row's context menu offers *Move to new window* and *Move to ▸ \<window\>*, where windows are named by their active tab's title.
+- The tab row's context menu offers *Move to new window*, then one *Move to “\<window\>”* item per other window, where windows are named by their active tab's title. The items are flat because the shared `Menu` has no submenus.
 - The frontend flushes the tab's pending draft save, then calls `move_tab`, which cancels any running analysis. That run's Channel belongs to the old window.
 - The receiving window shows the saved notes and analyses again at the next pause.
 
@@ -300,7 +301,7 @@ Settings, instructions and briefs are shared by all windows. The last save wins,
   - **Order:** a new tab joins the end of its project's group. ⌃Tab / ⌃⇧Tab follow this visual order, not the stored list order.
 - **Tab row:** the title and a status line.
   - Double-click to rename.
-  - The context menu has Rename, Move to new window, Move to ▸, and Close.
+  - The context menu has Rename, Move to new window, one Move to “\<window\>” per other window, and Close.
   - The active tab uses `bg-subtle`.
 - **Other entries:** *Open a project…* creates a new tab for the chosen folder. *Recently closed (n)* is collapsible and grouped by project. Each closed tab offers Reopen and Delete; Delete asks inline ("Delete for good?"), never with `confirm()`.
 - **Footer:** the usage line (Section 5) and the provider label, which opens Settings.
@@ -395,6 +396,7 @@ List prices in $ per million tokens. Source: Claude API reference, model table c
 | `claude-haiku-4-5` | 1.00 | 5.00 |
 
 - **Lookup order:** exact id first. Otherwise the CLI aliases `fable`, `opus`, `sonnet` and `haiku` map to the newest id of that family (`claude-fable-5-1`, `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`). Otherwise the cost is unknown and shown as "—", with the tokens still counted.
+- **Local models:** after exact ids and aliases, a model id from the local catalog (`local::catalog::find`) is priced at $0, so local runs, exact or estimated, show $0.00 instead of counting as unpriced.
 - **Haiku 5.5 above 100K prompt tokens:** the price rises to $0.50 / $2.50. Analysis prompts are capped at 120k characters (≈ 30k tokens), so the table uses the lower rate.
 - **Cache tokens:** the API provider sets no `cache_control`, so its responses have none today. If any appear, they are priced at the input rate, which errs high.
 - **Updating:** prices change rarely, and editing this table is a deliberate one-line change, like `LLAMA_CPP_BUILD`.
@@ -479,7 +481,7 @@ Saving never blocks typing. Persistence never fails an analysis.
 | Corrupt tab file | Kept as `.bad` and skipped. The sidebar shows "Couldn't read a tab; kept it as \<file\>.bad" once |
 | `record_snapshot` fails | The notes still show, plus one `notice` |
 | `save_draft` fails | Shown in the sidebar footer in `text-fault` and retried with the next edit (`createSaver`'s `onError`) |
-| Project folder missing or unreadable | The tab opens with its draft and notes. The top bar shows the `Precondition` message. Analysis runs without code context until the folder is readable |
+| Project folder missing or unreadable | The tab opens with its draft and notes, which don't re-run. The top bar shows the `Precondition` message. Analysis runs without code context until the folder is readable |
 | `analyze` / `get_tab` on a closed or unknown tab | `Precondition`: "This tab was closed." |
 | `reopen_tab` on a tab open elsewhere | `Precondition`: "That tab is already open in another window." |
 | Ledger write fails | One `eprintln!`, then ignored. The ledger never affects an analysis |
