@@ -118,6 +118,16 @@ impl Settings {
         usize::from(self.agents.max_agents.clamp(1, 8))
     }
 
+    /// How many explorers map the project for the brief. The Local model gets
+    /// one, because a single llama-server would queue the rest.
+    pub fn effective_brief_agents(&self) -> usize {
+        if self.agents.parallel_brief && !self.is_local() {
+            self.max_agents()
+        } else {
+            1
+        }
+    }
+
     /// How many agents write the notes: up to one per section. The Local
     /// model gets one, because a single llama-server would queue the rest.
     pub fn effective_note_agents(&self) -> usize {
@@ -232,5 +242,20 @@ mod tests {
         assert_eq!(s.agents, AgentSettings { max_agents: 4, parallel_brief: true, parallel_notes: false });
         let json = serde_json::to_value(&s).unwrap();
         assert_eq!(json["agents"], serde_json::json!({"maxAgents": 4, "parallelBrief": true, "parallelNotes": false}));
+    }
+
+    #[test]
+    fn brief_agents_follow_the_settings() {
+        let mut s = Settings::default();
+        assert_eq!(s.effective_brief_agents(), 4);
+        s.agents.max_agents = 6;
+        assert_eq!(s.effective_brief_agents(), 6, "explorers are not capped at four");
+        s.agents.max_agents = 1;
+        assert_eq!(s.effective_brief_agents(), 1);
+        s.agents = AgentSettings { parallel_brief: false, ..AgentSettings::default() };
+        assert_eq!(s.effective_brief_agents(), 1);
+        s.agents = AgentSettings::default();
+        s.provider = ProviderSettings::Local { model_id: "qwen3-4b-instruct".into() };
+        assert_eq!(s.effective_brief_agents(), 1);
     }
 }
