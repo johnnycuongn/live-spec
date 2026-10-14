@@ -71,13 +71,20 @@ impl UsageAcc {
         }
     }
 
-    /// None when the stream never reported usage. Priced from `usage::PRICES`.
+    /// None when the stream never reported usage. Priced from `usage::PRICES`; a response model the table
+    /// doesn't know falls back to the requested id when that one is listed.
     fn usage(self, requested: &str) -> Option<Usage> {
         if !self.seen {
             return None;
         }
+        // The response may name a dated snapshot ("claude-haiku-4-5-20251001") that the price
+        // table lacks while the id we asked for is listed: price and file it under the latter.
+        let model = match self.model {
+            Some(m) if price(&m).is_some() || price(requested).is_none() => m,
+            _ => requested.to_owned(),
+        };
         let mut u = Usage {
-            model: self.model.unwrap_or_else(|| requested.to_owned()),
+            model,
             input: self.input,
             cache_write: self.cache_write,
             cache_read: self.cache_read,
@@ -173,6 +180,21 @@ mod tests {
     #[test]
     fn a_stream_without_usage_reports_none() {
         assert_eq!(observe_all(&[DELTA]).usage("claude-haiku-5-5"), None);
+    }
+
+    #[test]
+    fn a_dated_snapshot_id_is_priced_and_filed_as_the_requested_model() {
+        let start = START.replace("claude-haiku-5-5", "claude-haiku-4-5-20251001");
+        let u = observe_all(&[start.as_str(), MESSAGE_DELTA]).usage("claude-haiku-4-5").unwrap();
+        assert_eq!((u.model.as_str(), u.input, u.output), ("claude-haiku-4-5", 1200, 310));
+        assert!((u.cost_usd.unwrap() - (1200.0 * 1.00 + 310.0 * 5.00) / 1e6).abs() < 1e-15, "priced as the requested model");
+    }
+
+    #[test]
+    fn a_dated_snapshot_of_an_unpriced_model_stays_unpriced_under_the_response_id() {
+        let start = START.replace("claude-haiku-5-5", "claude-sonnet-9-20270101");
+        let u = observe_all(&[start.as_str(), MESSAGE_DELTA]).usage("claude-sonnet-9").unwrap();
+        assert_eq!((u.model.as_str(), u.cost_usd), ("claude-sonnet-9-20270101", None));
     }
 
     #[test]

@@ -225,7 +225,7 @@ fn parse_line(line: &str, model: &str) -> Vec<CliEvent> {
 /// Without `modelUsage`, the `usage` totals with `total_cost_usd`, under the
 /// requested model. A record with no reported cost is priced from
 /// `usage::PRICES` (None if the table doesn't know the model). Empty when the
-/// event reports neither. Sorted by model.
+/// event reports neither, and for a record with no tokens at all. Sorted by model.
 fn result_usage(v: &Value, requested: &str) -> Vec<Usage> {
     let n = |x: &Value| x.as_u64().unwrap_or(0);
     let mut usage: Vec<Usage> = if let Some(models) = v["modelUsage"].as_object().filter(|m| !m.is_empty()) {
@@ -253,6 +253,8 @@ fn result_usage(v: &Value, requested: &str) -> Vec<Usage> {
     } else {
         Vec::new()
     };
+    // A failed run (bad key, auth failure) can report all zeros: that is not usage.
+    usage.retain(|u| u.input + u.cache_write + u.cache_read + u.output > 0);
     for u in &mut usage {
         if u.cost_usd.is_none() {
             let listed = price(&u.model).map(|p| p.cost(u));
@@ -390,6 +392,23 @@ mod tests {
         assert_eq!(result.unwrap_err().to_string(), "Claude Code failed: overloaded");
         let billed = Usage { model: "haiku".into(), input: 2000, cache_write: 0, cache_read: 0, output: 0, cost_usd: Some(0.0002) };
         assert_eq!(chunks, vec![Chunk::Usage(billed)], "the input was billed even though the run failed");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_run_with_no_tokens_counts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let failed = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Invalid API key","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0},"modelUsage":{}}"#;
+        let (result, chunks) = run(&fake_cli(dir.path(), &[failed], 1)).await;
+        assert!(result.is_err());
+        assert_eq!(chunks, vec![], "zero tokens is no usage, not an exact $0 run");
+    }
+
+    #[test]
+    fn a_model_with_zero_tokens_in_model_usage_is_dropped() {
+        let r = r#"{"type":"result","is_error":false,"result":"x","modelUsage":{"claude-sonnet-5-5":{"inputTokens":0,"outputTokens":0,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0},"claude-haiku-5-5":{"inputTokens":2,"outputTokens":3,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.001}}}"#;
+        let [CliEvent::Result { usage, .. }] = &parse_line(r, "haiku")[..] else { panic!("one result") };
+        assert_eq!(usage, &vec![haiku(2, 0, 0, 3, 0.001)]);
     }
 
     fn request(allow_repo_tools: bool) -> ChatRequest {
