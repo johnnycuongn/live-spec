@@ -199,8 +199,8 @@ pub struct Settings {
 }
 pub struct AgentSettings {
     pub max_agents: u8,       // clamped to 1..=8, default 4
-    pub parallel_brief: bool, // default true
-    pub parallel_notes: bool, // default true
+    pub parallel_brief: bool, // default false (measured slower; see Measurements)
+    pub parallel_notes: bool, // default false (measured slower; see Measurements)
 }
 pub struct JevSettings {
     pub gate: bool,    // default true

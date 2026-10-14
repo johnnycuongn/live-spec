@@ -22,13 +22,9 @@ Then pick a model in Settings (top right):
 
 ### Optional: fact-check notes with Jev
 
-With a [TypeSafe](https://typesafe.ai) API key, LiveBrainstorm checks every Fault in its notes against your code and marks it ✓ confirmed, ✗ contradicted, or unclear. For local development, put the key in `.env.local` at the repo root (git ignores it):
-
-    TYPESAFE_API_KEY=your-key
+With a [TypeSafe](https://typesafe.ai) API key, LiveBrainstorm checks every Fault in its notes against your code and marks it ✓ confirmed, ✗ contradicted, or unclear. Add the key in **Settings → Jev (TypeSafe)**; it's saved to your system Keychain. For local development you can instead put `TYPESAFE_API_KEY=your-key` in `.env.local` at the repo root (git ignores it; development builds only) or in your environment. Settings shows which one is in use, and has switches for each Jev feature.
 
 With a key, Jev also skips re-analysis when an edit doesn't change the idea, and picks which code snippets the notes model sees. These calls send your draft, each Fault, and short code excerpts to TypeSafe. They never run with the Local model option, which promises nothing leaves your computer.
-
-Development builds read it on each analysis, so edits apply without a restart. Packaged builds ignore `.env.local`; set `TYPESAFE_API_KEY` in the environment instead.
 
 ### Requirements for the Claude subscription option
 
@@ -55,12 +51,12 @@ React (Vite, Tailwind)               Rust
 
 **Understanding the project happens in two layers**, the way a new teammate ramps up:
 
-1. **Brief (once):** an onboarding doc for the AI. With Claude Code, Claude explores the repo itself using read-only tools (`Read`, `Glob`, `Grep`; edits, shell and web are disallowed). Other providers get a budgeted digest (tree, manifests, docs, heads of central files). Cached per project and marked stale when files change. Optionally (`agents.parallelBrief: true`, capped by `agents.maxAgents`), larger repos are split into slices mapped by parallel explorers and one call merges their notes. It's off by default: measured on this repo with Claude Code, 4 explorers plus the merge took about 16% longer than one explorer.
+1. **Brief (once):** an onboarding doc for the AI. With Claude Code, Claude explores the repo itself using read-only tools (`Read`, `Glob`, `Grep`; edits, shell and web are disallowed). Other providers get a budgeted digest (tree, manifests, docs, heads of central files). Cached per project and marked stale when files change. Optionally (**Settings → Agents → Map the project with parallel agents**), larger repos are split into slices mapped by parallel explorers and one call merges their notes. It's off by default: measured on this repo with Claude Code, 4 explorers plus the merge took about 16% longer than one explorer.
 2. **Retrieval (every pause):** TF-IDF over code identifiers picks the 3 to 5 files your draft is about, weighting what you typed most recently. Runs in microseconds, offline.
 
 **Live analysis:** the UI waits for a pause (configurable), sends the draft, and streams the reply into four sections. A new request aborts the previous one in Rust (which kills the `claude` process too), and stale replies are dropped by request id. If you keep typing, the last notes stay visible and the rule beside them turns dashed.
 
-Optionally, the four sections can be written by up to four agents at once: set `agents.parallelNotes: true` in settings (`agents.maxAgents`, default 4, caps it). It's off by default because, measured with Claude Code, 4 agents finished *slower* than 1 (each call's start-up dominates) while using 4× the subscription. Each agent is a separate model call.
+Optionally, the four sections can be written by up to four agents at once: turn on **Settings → Agents → Write notes with parallel agents** (capped by **Agents at once**). It's off by default because, measured with Claude Code, 4 agents finished *slower* than 1 (each call's start-up dominates) while using 4× the subscription. Each agent is a separate model call.
 
 ## Design decisions
 
