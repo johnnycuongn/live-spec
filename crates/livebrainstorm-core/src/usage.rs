@@ -5,12 +5,12 @@
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::llm::Usage;
+use crate::llm::{ChatRequest, Chunk, OnChunk, Provider, Usage};
 use crate::store::{self, Loaded};
 use crate::Result;
 
@@ -309,6 +309,105 @@ impl UsageLedger {
     }
 }
 
+// ---------- metering one call ----------
+
+/// Wraps one model call. A `Chunk::Usage` is recorded exactly; a call that
+/// succeeds without one, or is dropped mid-stream (a keystroke aborted it), is
+/// estimated from its characters; a call that fails without one records nothing.
+pub struct Meter {
+    ledger: Arc<UsageLedger>,
+    tag: UsageTag,
+    model: String,
+    sent_chars: usize,
+    received_chars: usize,
+    /// A `Chunk::Usage` arrived and was recorded.
+    reported: bool,
+    /// `finish` ran, so `Drop` adds nothing.
+    settled: bool,
+}
+
+impl Meter {
+    pub fn new(ledger: Arc<UsageLedger>, tag: UsageTag, model: String, sent_chars: usize) -> Self {
+        Self { ledger, tag, model, sent_chars, received_chars: 0, reported: false, settled: false }
+    }
+
+    pub fn observe(&mut self, chunk: &Chunk) {
+        match chunk {
+            Chunk::Text(t) => self.received_chars += t.chars().count(),
+            Chunk::Activity(_) => {}
+            Chunk::Usage(u) => {
+                self.ledger.record(&self.tag, u, false);
+                self.reported = true;
+            }
+        }
+    }
+
+    /// Ends the call. A call that failed without reporting usage (bad key, CLI
+    /// missing) is assumed unbilled.
+    pub fn finish(mut self, ok: bool) {
+        if ok && !self.reported {
+            self.record_estimate();
+        }
+        self.settled = true;
+    }
+
+    /// `ceil(chars / 4)` tokens each way, all input at the input rate, priced by
+    /// the model the provider was asked for.
+    fn record_estimate(&self) {
+        let tokens = |chars: usize| chars.div_ceil(4) as u64;
+        let mut u = Usage {
+            model: self.model.clone(),
+            input: tokens(self.sent_chars),
+            cache_write: 0,
+            cache_read: 0,
+            output: tokens(self.received_chars),
+            cost_usd: None,
+        };
+        u.cost_usd = price(&u.model).map(|p| p.cost(&u));
+        self.ledger.record(&self.tag, &u, true);
+    }
+}
+
+/// Dropped before `finish`: the call was aborted mid-stream, after the request
+/// went out. Records through the ledger's `std` mutex; never awaits.
+impl Drop for Meter {
+    fn drop(&mut self) {
+        if !self.settled && !self.reported {
+            self.record_estimate();
+        }
+    }
+}
+
+/// Characters sent: `system` + `user`, as Unicode scalars (not bytes).
+pub fn sent_chars(req: &ChatRequest) -> usize {
+    req.system.chars().count() + req.user.chars().count()
+}
+
+/// One model call, metered. The meter is created here, immediately before
+/// `provider.stream`, so a run cancelled earlier (during the Jev pre-phase)
+/// records nothing; if this future is dropped mid-stream, the meter's `Drop`
+/// records an estimate. `Text` and `Activity` go on to `on_chunk`; `Usage` is
+/// recorded and not forwarded.
+pub async fn metered(
+    provider: &Provider,
+    req: &ChatRequest,
+    ledger: Arc<UsageLedger>,
+    tag: UsageTag,
+    on_chunk: OnChunk<'_>,
+) -> Result<String> {
+    let mut meter = Meter::new(ledger, tag, provider.model().to_owned(), sent_chars(req));
+    let result = provider
+        .stream(req, &mut |chunk: Chunk| {
+            meter.observe(&chunk);
+            if !matches!(chunk, Chunk::Usage(_)) {
+                on_chunk(chunk);
+            }
+        })
+        .await;
+    meter.finish(result.is_ok());
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +619,156 @@ mod tests {
         l.record_at(T, &tag("/a", UsageKind::Notes), &used("m", 1, 1, Some(0.0)), false);
         l.record_at(T, &tag("/a", UsageKind::Notes), &used("m", 1, 1, Some(0.0)), false);
         assert_eq!(calls.load(Ordering::SeqCst), 1 + 2);
+    }
+
+    use std::time::Duration;
+
+    use crate::jev::test_server::{serve, Canned};
+    use crate::llm::OpenAiCompat;
+
+    fn shared() -> (tempfile::TempDir, Arc<UsageLedger>) {
+        let (dir, l) = ledger();
+        (dir, Arc::new(l))
+    }
+
+    /// Every bucket summed, so a test that straddles an hour boundary still passes.
+    fn total(l: &UsageLedger) -> UsageBucket {
+        let all = l.report(0);
+        let mut sum = all.first().cloned().expect("something was recorded");
+        for b in &all[1..] {
+            sum.merge(b);
+        }
+        sum
+    }
+
+    #[test]
+    fn a_meter_dropped_mid_call_records_one_estimate() {
+        let (_dir, l) = shared();
+        let mut m = Meter::new(l.clone(), tag("/a", UsageKind::Notes), "claude-haiku-5-5".into(), 4001);
+        m.observe(&Chunk::Text("éééé".into())); // 4 characters, 8 bytes: one token
+        m.observe(&Chunk::Activity("Read src/main.rs".into()));
+        drop(m);
+        let b = total(&l);
+        assert_eq!((b.input, b.output, b.runs, b.estimated_runs), (1001, 1, 1, 1), "ceil(4001 / 4) and ceil(4 / 4)");
+        let expected = (1001.0 * 0.10 + 1.0 * 0.50) / 1e6;
+        assert!((b.cost_usd - expected).abs() < 1e-15);
+        assert!((b.estimated_cost_usd - expected).abs() < 1e-15);
+    }
+
+    #[test]
+    fn finishing_without_usage_estimates_only_when_the_call_succeeded() {
+        let (_dir, l) = shared();
+        Meter::new(l.clone(), tag("/a", UsageKind::Notes), "haiku".into(), 40).finish(true);
+        Meter::new(l.clone(), tag("/b", UsageKind::Notes), "haiku".into(), 40).finish(false);
+        let b = total(&l);
+        assert_eq!((b.runs, b.estimated_runs, b.input), (1, 1, 10), "a failed call without usage is assumed unbilled");
+        assert_eq!(l.report(0)[0].root.as_deref(), Some("/a"));
+    }
+
+    #[test]
+    fn reported_usage_is_recorded_exactly_once() {
+        let (_dir, l) = shared();
+        let exact = Usage { model: "claude-haiku-5-5".into(), input: 2, cache_write: 2198, cache_read: 535, output: 45, cost_usd: Some(0.00046765) };
+        let meter = || Meter::new(l.clone(), tag("/a", UsageKind::Notes), "haiku".into(), 4000);
+        let mut m = meter();
+        m.observe(&Chunk::Usage(exact.clone()));
+        m.finish(true);
+        let mut m = meter();
+        m.observe(&Chunk::Usage(exact.clone()));
+        drop(m);
+        let mut m = meter();
+        m.observe(&Chunk::Usage(exact));
+        m.finish(false); // a failed run whose result still carried usage
+        let b = total(&l);
+        assert_eq!((b.runs, b.estimated_runs, b.input, b.cache_write), (3, 0, 6, 3 * 2198));
+        assert!((b.cost_usd - 3.0 * 0.00046765).abs() < 1e-15);
+    }
+
+    #[test]
+    fn an_estimate_for_an_unpriced_model_counts_tokens_but_no_cost() {
+        let (_dir, l) = shared();
+        drop(Meter::new(l.clone(), tag("/a", UsageKind::Notes), "claude-sonnet-9".into(), 400));
+        let b = total(&l);
+        assert_eq!((b.input, b.runs, b.unpriced_runs, b.cost_usd), (100, 1, 1, 0.0));
+    }
+
+    #[test]
+    fn sent_chars_counts_characters_not_bytes() {
+        let req = ChatRequest { system: "ééé".into(), user: "ab".into(), max_tokens: 1, cwd: None, allow_repo_tools: false, max_turns: None };
+        assert_eq!(sent_chars(&req), 5);
+    }
+
+    fn local(base_url: String, model: &str) -> Provider {
+        Provider::OpenAiCompat(OpenAiCompat { base_url, model: model.into(), context_tokens: 4096, http: reqwest::Client::new() })
+    }
+
+    /// 400 characters: an estimate of 100 input tokens.
+    fn request() -> ChatRequest {
+        ChatRequest { system: "s".repeat(40), user: "u".repeat(360), max_tokens: 100, cwd: None, allow_repo_tools: false, max_turns: None }
+    }
+
+    const WITH_USAGE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n\
+        data: {\"choices\":[{\"finish_reason\":\"stop\",\"delta\":{}}],\"usage\":{\"prompt_tokens\":31,\"completion_tokens\":2}}\n\n\
+        data: [DONE]\n\n";
+    const WITHOUT_USAGE: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: [DONE]\n\n";
+
+    #[tokio::test]
+    async fn a_reported_call_is_recorded_exactly_and_never_forwarded() {
+        let (url, _) = serve(vec![Canned::new(200, WITH_USAGE)]).await;
+        let (_dir, l) = shared();
+        let mut seen = Vec::new();
+        let provider = local(url, "qwen3-4b-instruct");
+        let text = metered(&provider, &request(), l.clone(), tag("/a", UsageKind::Notes), &mut |c: Chunk| seen.push(c)).await.unwrap();
+        assert_eq!(text, "Hi");
+        assert_eq!(seen, vec![Chunk::Text("Hi".into())], "usage is recorded, never shown");
+        let b = total(&l);
+        assert_eq!((b.input, b.output, b.runs, b.estimated_runs, b.cost_usd), (31, 2, 1, 0, 0.0));
+    }
+
+    #[tokio::test]
+    async fn a_call_without_usage_is_estimated_from_its_characters() {
+        let (url, _) = serve(vec![Canned::new(200, WITHOUT_USAGE)]).await;
+        let (_dir, l) = shared();
+        let provider = local(url, "claude-haiku-5-5"); // priced, to check the arithmetic
+        metered(&provider, &request(), l.clone(), tag("/a", UsageKind::Notes), &mut |_: Chunk| {}).await.unwrap();
+        let b = total(&l);
+        assert_eq!((b.input, b.output, b.estimated_runs), (100, 1, 1), "400 characters sent, 2 received");
+        assert!((b.estimated_cost_usd - (100.0 * 0.10 + 1.0 * 0.50) / 1e6).abs() < 1e-15);
+    }
+
+    #[tokio::test]
+    async fn a_failed_call_without_usage_records_nothing() {
+        let (url, _) = serve(vec![Canned::new(500, "{}")]).await;
+        let (_dir, l) = shared();
+        let provider = local(url, "qwen3-4b-instruct");
+        let result = metered(&provider, &request(), l.clone(), tag("/a", UsageKind::Notes), &mut |_: Chunk| {}).await;
+        assert!(result.is_err());
+        assert!(l.report(0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_call_dropped_mid_stream_records_one_estimate() {
+        let (url, _) = serve(vec![Canned::new(200, WITH_USAGE).delayed(5_000)]).await;
+        let (_dir, l) = shared();
+        let (provider, req) = (local(url, "qwen3-4b-instruct"), request());
+        let mut sink = |_: Chunk| {};
+        let call = metered(&provider, &req, l.clone(), tag("/a", UsageKind::Notes), &mut sink);
+        assert!(tokio::time::timeout(Duration::from_millis(200), call).await.is_err(), "the keystroke came first");
+        let b = total(&l);
+        assert_eq!((b.runs, b.estimated_runs, b.input, b.output, b.cost_usd), (1, 1, 100, 0, 0.0), "local models are free");
+    }
+
+    #[tokio::test]
+    async fn a_run_cancelled_before_the_request_records_nothing() {
+        let (url, hits) = serve(vec![Canned::new(200, WITH_USAGE)]).await;
+        let (_dir, l) = shared();
+        let provider = local(url, "qwen3-4b-instruct");
+        let run = async {
+            tokio::time::sleep(Duration::from_secs(5)).await; // the Jev pre-phase
+            metered(&provider, &request(), l.clone(), tag("/a", UsageKind::Notes), &mut |_: Chunk| {}).await
+        };
+        assert!(tokio::time::timeout(Duration::from_millis(100), run).await.is_err());
+        assert!(l.report(0).is_empty(), "no meter existed yet");
+        assert_eq!(hits.load(Ordering::SeqCst), 0, "and no request was sent");
     }
 }
