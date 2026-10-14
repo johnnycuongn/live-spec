@@ -7,6 +7,7 @@
 
 mod ids;
 mod store;
+mod windows;
 
 use std::collections::HashSet;
 
@@ -16,6 +17,7 @@ use crate::jev::check::{CheckEvent, CheckResult};
 
 pub use ids::{tab_id, valid_id, window_id};
 pub use store::{Recorder, SessionStore};
+pub use windows::WindowSummary;
 
 /// Analyses kept per tab, newest first.
 pub const HISTORY_LEN: usize = 5;
