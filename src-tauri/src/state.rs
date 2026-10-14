@@ -7,6 +7,7 @@ use livebrainstorm_core::local::{LocalPaths, LocalServer};
 use livebrainstorm_core::project::{BriefStore, ProjectIndex, StoredBrief};
 use livebrainstorm_core::sessions::SessionStore;
 use livebrainstorm_core::settings::Settings;
+use livebrainstorm_core::usage::UsageLedger;
 use tauri::async_runtime::JoinHandle;
 
 /// One loaded project: its index (which keeps file contents) and its cached brief.
@@ -31,6 +32,8 @@ pub struct AppState {
     pub brief_tasks: Mutex<HashMap<String, JoinHandle<()>>>,
     /// Windows, tabs, drafts and saved analyses (`<app_data>/sessions`).
     pub sessions: SessionStore,
+    /// Every model call's tokens and cost (`usage.json`); shared with each `Meter`.
+    pub usage: Arc<UsageLedger>,
     /// Keyed by "runtime" or a model id.
     pub downloads: Mutex<HashMap<String, JoinHandle<()>>>,
     /// tokio Mutex: held across the (slow) server startup.
@@ -51,6 +54,7 @@ impl AppState {
             analyses: Mutex::new(HashMap::new()),
             brief_tasks: Mutex::new(HashMap::new()),
             sessions: SessionStore::new(data_dir.join("sessions")),
+            usage: Arc::new(UsageLedger::new(data_dir.join("usage.json"))),
             downloads: Mutex::new(HashMap::new()),
             local: tokio::sync::Mutex::new(None),
         }

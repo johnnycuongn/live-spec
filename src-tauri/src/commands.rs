@@ -17,6 +17,7 @@ use livebrainstorm_core::project::explore;
 use livebrainstorm_core::project::{self, BriefStatus, StoredBrief};
 use livebrainstorm_core::sessions::{valid_id, LegacyDraft, Recorder, Tab, WindowSummary, WindowView};
 use livebrainstorm_core::settings::{ProviderSettings, Settings, Tier};
+use livebrainstorm_core::usage::{self, UsageBucket, UsageKind, UsageTag};
 use livebrainstorm_core::{prompt, Error, Result};
 use serde::Serialize;
 use tauri::ipc::Channel;
@@ -235,10 +236,12 @@ pub async fn build_brief(app: AppHandle, root: String, on_event: Channel<UiEvent
             let settings = task_app.state::<AppState>().settings();
             let provider = provider::resolve(&task_app, Tier::Deep).await?;
             let slices = explore::slices(&index, settings.effective_brief_agents());
+            let ledger = task_app.state::<AppState>().usage.clone();
+            let tag = UsageTag { root: Some(index.root.display().to_string()), kind: UsageKind::Brief };
             let (text, agents) = if slices.len() <= 1 {
                 // One explorer: today's path, unchanged.
                 let req = prompt::brief_request(&index, &provider);
-                (provider.stream(&req, &mut on_chunk(&on_event)).await?, 1)
+                (usage::metered(&provider, &req, ledger, tag, &mut on_chunk(&on_event)).await?, 1)
             } else {
                 // Explorers map their slices at once; their activity shows as
                 // "Agent k". A `for` loop, not `.map(…)`, inside this spawned task.
@@ -247,6 +250,7 @@ pub async fn build_brief(app: AppHandle, root: String, on_event: Channel<UiEvent
                 for (k, slice) in slices.iter().enumerate() {
                     let req = prompt::explorer_request(&index, &provider, slice, k + 1, n);
                     let (provider, on_event) = (&provider, &on_event);
+                    let (ledger, tag) = (ledger.clone(), tag.clone());
                     explorers.push(async move {
                         let lane = k + 1;
                         let mut sink = |chunk: Chunk| {
@@ -254,12 +258,12 @@ pub async fn build_brief(app: AppHandle, root: String, on_event: Channel<UiEvent
                                 send(on_event, UiEvent::Activity { label, lane });
                             }
                         };
-                        provider.stream(&req, &mut sink).await
+                        usage::metered(provider, &req, ledger, tag, &mut sink).await
                     });
                 }
                 let (notes, unmapped) = explore::collect_notes(&slices, agents::run_limited(n, explorers).await)?;
                 let req = prompt::merge_request(&index, &provider, &notes, &unmapped);
-                (provider.stream(&req, &mut on_chunk(&on_event)).await?, n)
+                (usage::metered(&provider, &req, ledger, tag, &mut on_chunk(&on_event)).await?, n)
             };
             let brief = StoredBrief {
                 root: index.root.display().to_string(),
@@ -586,6 +590,10 @@ pub async fn analyze(
         // Each lane writes some of the sections; up to one agent per section.
         // A plain `for` loop, not `.map(…)`: closures over borrowed items trip
         // rustc's Send check inside this spawned task.
+        // Each lane is metered from the moment its request starts (after the
+        // pre-phase), so a keystroke during the Jev gate records nothing.
+        let ledger = state.usage.clone();
+        let tag = UsageTag { root: root.clone(), kind: UsageKind::Notes };
         let groups = prompt::section_groups(settings.effective_note_agents());
         let (faults_tx, faults_rx) = oneshot::channel::<String>();
         let mut faults_tx = Some(faults_tx);
@@ -594,13 +602,14 @@ pub async fn analyze(
             let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, sections, &instructions);
             let tx = if sections.contains(&"Faults") { faults_tx.take() } else { None };
             let (provider, on_event) = (&provider, &on_event);
+            let (ledger, tag) = (ledger.clone(), tag.clone());
             lanes.push(async move {
                 let mut sink = |chunk: Chunk| match chunk {
                     Chunk::Text(text) => send(on_event, UiEvent::Text { text, lane }),
                     Chunk::Activity(label) => send(on_event, UiEvent::Activity { label, lane }),
                     Chunk::Usage(_) => {}
                 };
-                let result = provider.stream(&req, &mut sink).await;
+                let result = usage::metered(provider, &req, ledger, tag, &mut sink).await;
                 if let (Some(tx), Ok(text)) = (tx, &result) {
                     let _ = tx.send(text.clone());
                 }
@@ -660,6 +669,15 @@ pub fn cancel_analysis(state: State<'_, AppState>, tab_id: String) -> Result<()>
     check_id(&tab_id)?;
     cancel_task(&state.analyses, &tab_id); // drops the Claude CLI children too (kill_on_drop)
     Ok(())
+}
+
+// ---------- usage ----------
+
+/// The ledger's hourly buckets (UTC) from `since_hour` on; the UI groups them
+/// by the user's local day.
+#[tauri::command]
+pub fn usage_report(state: State<'_, AppState>, since_hour: u64) -> Vec<UsageBucket> {
+    state.usage.report(since_hour)
 }
 
 // ---------- local models ----------

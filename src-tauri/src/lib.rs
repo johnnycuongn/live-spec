@@ -9,7 +9,11 @@ mod secrets;
 mod state;
 mod windows;
 
-use tauri::{Manager, RunEvent};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use tauri::{AppHandle, Emitter, Manager, RunEvent};
 
 use state::AppState;
 
@@ -33,6 +37,7 @@ pub fn run() {
             let data_dir = app.path().app_data_dir()?;
             let config_dir = app.path().app_config_dir()?;
             app.manage(AppState::new(&data_dir, &config_dir));
+            start_usage_tasks(app.handle());
             // One window per workspace window; tauri.conf.json declares none.
             let ids = app.state::<AppState>().sessions.windows_to_open().unwrap_or_else(|e| {
                 eprintln!("LiveBrainstorm: couldn't read the saved windows: {e}");
@@ -74,6 +79,7 @@ pub fn run() {
             commands::build_brief,
             commands::analyze,
             commands::cancel_analysis,
+            commands::usage_report,
             commands::list_workspace,
             commands::get_tab,
             commands::create_tab,
@@ -101,6 +107,44 @@ pub fn run() {
                 if let Ok(mut local) = app.state::<AppState>().local.try_lock() {
                     local.take(); // kill_on_drop
                 }
+                // The last few seconds of usage, and the 90-day prune.
+                if let Err(e) = app.state::<AppState>().usage.flush() {
+                    eprintln!("Couldn't save usage.json: {e}");
+                }
             }
         });
+}
+
+/// Emits `usage-changed` at most once a second after a record, and saves the
+/// ledger every 5 s when it changed. Ledger failures are logged once per
+/// streak and never reach an analysis.
+fn start_usage_tasks(app: &AppHandle) {
+    let ledger = app.state::<AppState>().usage.clone();
+    let changed = Arc::new(AtomicBool::new(false));
+    let flag = changed.clone();
+    ledger.set_on_record(Box::new(move || flag.store(true, Ordering::Relaxed)));
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(1));
+        let (mut seconds, mut failing) = (0u32, false);
+        loop {
+            tick.tick().await;
+            if changed.swap(false, Ordering::Relaxed) {
+                let _ = app.emit(events::USAGE_CHANGED, ());
+            }
+            seconds += 1;
+            if seconds < 5 {
+                continue;
+            }
+            seconds = 0;
+            match ledger.flush_if_dirty() {
+                Ok(()) => failing = false,
+                Err(e) if !failing => {
+                    eprintln!("Couldn't save usage.json: {e}");
+                    failing = true;
+                }
+                Err(_) => {}
+            }
+        }
+    });
 }

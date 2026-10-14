@@ -9,6 +9,8 @@ pub const WORKSPACE_CHANGED: &str = "workspace-changed";
 pub const MENU: &str = "menu";
 pub const SETTINGS_CHANGED: &str = "settings-changed";
 pub const INSTRUCTIONS_CHANGED: &str = "instructions-changed";
+/// After a ledger record, at most once a second. No payload: windows refetch `usage_report`.
+pub const USAGE_CHANGED: &str = "usage-changed";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
