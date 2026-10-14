@@ -5,7 +5,8 @@ import { api, errorMessage, type Settings } from "./lib/ipc";
 import { providerLabel } from "./lib/providerOptions";
 import { EMPTY_INSTRUCTIONS, instructionsLabel } from "./lib/instructions";
 import { useActions } from "./lib/actions";
-import { IDLE_BRIEF, projects, useProjects } from "./lib/projects";
+import { useCrossWindowRefresh } from "./lib/crossWindow";
+import { IDLE_BRIEF, projects, projectsState, useProjects } from "./lib/projects";
 import { projectName, readCollapsed, rowTitle, windowTitle, writeCollapsed } from "./lib/tabList";
 import { sessionFor, tabs, useWorkspace } from "./lib/tabs";
 import { useTabSession } from "./lib/useTabSession";
@@ -63,6 +64,19 @@ export default function App() {
   }, [ws.activeId]);
 
   useWindowTitle(windowTitle(title));
+
+  // Another window saved settings or instructions: refetch what this window shows.
+  useCrossWindowRefresh({
+    windowId: currentWindowId(),
+    cachedRoots: () => Object.keys(projectsState().instructions),
+    flushInstructions: () => projects.flush(),
+    refetchInstructions: (root) => projects.reloadInstructions(root),
+    refetchSettings: async () => {
+      const s = await api.getSettings();
+      setSettings(s);
+      tabs.setDebounce(s.debounceMs);
+    },
+  });
 
   // Esc closes either drawer. The settings <dialog> handles its own Esc.
   useEffect(() => {

@@ -34,3 +34,17 @@ export interface MenuEvent {
  *  focused window only, and a global `listen` would also receive the other windows' items. */
 export const onMenu = (fn: (e: MenuEvent) => void): Promise<UnlistenFn> =>
   getCurrentWindow().listen<MenuEvent>("menu", (e) => fn(e.payload));
+
+/** Mirrors `events::InstructionsChanged`. `root` "" is the templates (or the no-project
+ *  instructions); `source` is the label of the window that saved. */
+export interface InstructionsChangedEvent {
+  root: string;
+  source: string;
+}
+
+/** After any window saves settings. Global: every window refetches. */
+export const onSettingsChanged = (fn: () => void): Promise<UnlistenFn> => listen("settings-changed", () => fn());
+
+/** After any window saves instructions or templates. Global: each window decides what to refetch. */
+export const onInstructionsChanged = (fn: (e: InstructionsChangedEvent) => void): Promise<UnlistenFn> =>
+  listen<InstructionsChangedEvent>("instructions-changed", (e) => fn(e.payload));

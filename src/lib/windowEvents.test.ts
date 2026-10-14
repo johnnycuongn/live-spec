@@ -14,7 +14,7 @@ vi.mock("@tauri-apps/api/window", async (importOriginal) => ({
   getCurrentWindow: () => ({ label: "w-2", listen: tauri.windowListen }),
 }));
 
-import { onMenu } from "./events";
+import { onInstructionsChanged, onMenu, onSettingsChanged } from "./events";
 
 const names = (listen: typeof tauri.globalListen) => listen.mock.calls.map(([name]) => name);
 
@@ -31,5 +31,17 @@ describe("cross-window events", () => {
     expect(names(tauri.globalListen)).not.toContain("menu");
     tauri.windowListen.mock.calls[0][1]({ payload: { id: "close-tab" } });
     expect(seen).toEqual(["close-tab"]);
+  });
+
+  it("settings and instructions changes reach every window", async () => {
+    const settings = vi.fn();
+    const instructions = vi.fn();
+    await onSettingsChanged(settings);
+    await onInstructionsChanged(instructions);
+    expect(names(tauri.globalListen)).toEqual(["settings-changed", "instructions-changed"]);
+    tauri.globalListen.mock.calls[0][1]({ payload: null });
+    tauri.globalListen.mock.calls[1][1]({ payload: { root: "/p", source: "w-1" } });
+    expect(settings).toHaveBeenCalledTimes(1);
+    expect(instructions).toHaveBeenCalledWith({ root: "/p", source: "w-1" });
   });
 });
