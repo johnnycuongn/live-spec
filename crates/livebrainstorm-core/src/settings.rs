@@ -43,6 +43,7 @@ pub struct Settings {
     /// Idle time after typing before the notes re-think.
     pub debounce_ms: u64,
     pub jev: JevSettings,
+    pub agents: AgentSettings,
 }
 
 impl Default for Settings {
@@ -56,6 +57,7 @@ impl Default for Settings {
             },
             debounce_ms: 1200,
             jev: JevSettings::default(),
+            agents: AgentSettings::default(),
         }
     }
 }
@@ -80,11 +82,48 @@ impl Default for JevSettings {
     }
 }
 
+/// How many agents work at once. Notes use at most one per section.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct AgentSettings {
+    /// The cap on agents running at once; clamped to 1..=8.
+    pub max_agents: u8,
+    /// Map the project with parallel explorers (phase 4).
+    pub parallel_brief: bool,
+    /// Write the four note sections with parallel agents.
+    pub parallel_notes: bool,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self { max_agents: 4, parallel_brief: true, parallel_notes: true }
+    }
+}
+
 impl Settings {
     /// Jev sends drafts and code excerpts to TypeSafe, so the Local option
     /// ("private and offline") never uses it, whatever the switches say.
     pub fn jev_allowed(&self) -> bool {
-        !matches!(self.provider, ProviderSettings::Local { .. })
+        !self.is_local()
+    }
+
+    fn is_local(&self) -> bool {
+        matches!(self.provider, ProviderSettings::Local { .. })
+    }
+
+    /// The user's cap on agents running at once.
+    pub fn max_agents(&self) -> usize {
+        usize::from(self.agents.max_agents.clamp(1, 8))
+    }
+
+    /// How many agents write the notes: up to one per section. The Local
+    /// model gets one, because a single llama-server would queue the rest.
+    pub fn effective_note_agents(&self) -> usize {
+        if self.agents.parallel_notes && !self.is_local() {
+            self.max_agents().min(4)
+        } else {
+            1
+        }
     }
 
     pub fn jev_check_enabled(&self) -> bool {
@@ -159,5 +198,35 @@ mod tests {
         s.jev = JevSettings { gate: false, rerank: false, check: false, ..JevSettings::default() };
         assert!(s.jev_allowed());
         assert!(!s.jev_check_enabled() && !s.jev_gate_enabled() && !s.jev_rerank_enabled());
+    }
+
+    #[test]
+    fn note_agents_follow_the_settings() {
+        let mut s = Settings::default();
+        assert_eq!((s.max_agents(), s.effective_note_agents()), (4, 4));
+        s.agents.max_agents = 2;
+        assert_eq!(s.effective_note_agents(), 2);
+        s.agents.max_agents = 8;
+        assert_eq!((s.max_agents(), s.effective_note_agents()), (8, 4), "at most one agent per section");
+        s.agents.max_agents = 0;
+        assert_eq!((s.max_agents(), s.effective_note_agents()), (1, 1), "clamped to at least one");
+        s.agents.max_agents = 200;
+        assert_eq!(s.max_agents(), 8, "clamped to at most eight");
+        s.agents = AgentSettings { parallel_notes: false, ..AgentSettings::default() };
+        assert_eq!(s.effective_note_agents(), 1);
+        s.agents = AgentSettings::default();
+        s.provider = ProviderSettings::Local { model_id: "qwen3-4b-instruct".into() };
+        assert_eq!(s.effective_note_agents(), 1, "one local server would just queue the requests");
+    }
+
+    #[test]
+    fn files_from_before_agents_get_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("settings.json");
+        std::fs::write(&path, r#"{"provider":{"kind":"claudeCli","binaryPath":null,"fastModel":"haiku","deepModel":"sonnet"},"debounceMs":900}"#).unwrap();
+        let s = Settings::load(&path);
+        assert_eq!(s.agents, AgentSettings { max_agents: 4, parallel_brief: true, parallel_notes: true });
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(json["agents"], serde_json::json!({"maxAgents": 4, "parallelBrief": true, "parallelNotes": true}));
     }
 }
