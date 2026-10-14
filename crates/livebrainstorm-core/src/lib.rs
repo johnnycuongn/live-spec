@@ -8,6 +8,7 @@ pub mod agents;
 pub mod analysis;
 pub mod env_file;
 pub mod error;
+pub mod instructions;
 pub mod jev;
 pub mod llm;
 pub mod local;
