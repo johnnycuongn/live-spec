@@ -219,7 +219,7 @@ pub async fn analyze(app: AppHandle, draft: String, previous_draft: Option<Strin
                 send(&on_event, UiEvent::Notice { message });
             }
 
-            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider);
+            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, &prompt::SECTIONS);
             provider.stream(&req, &mut on_chunk(&on_event)).await.map(Some)
         }
         .await;

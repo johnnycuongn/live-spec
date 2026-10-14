@@ -7,25 +7,60 @@ use crate::project::{digest, ProjectIndex, Snippet};
 /// Headings the UI splits the analysis on. Keep in sync with `src/lib/sections.ts`.
 pub const SECTIONS: [&str; 4] = ["Intent", "Faults", "Directions", "Questions"];
 
-const ANALYSIS_SYSTEM: &str = "\
+const ANALYSIS_INTRO: &str = "\
 You are LiveBrainstorm, a sharp brainstorming partner sitting beside a software engineer's draft. \
 The draft is unfinished thinking typed in real time about the project described in <project>. \
 Your job is to make their thinking better, not to finish their writing.
 
-Respond in Markdown with exactly these four sections, in this order, and nothing else:
-## Intent
-What you think they are trying to do and why, in one or two bullets. If it's ambiguous, say what is ambiguous.
-## Faults
-Problems with the draft as it stands: conflicts with how the project actually works, things that already exist, \
+";
+
+/// What each section asks for, in `SECTIONS` order.
+const SECTION_GUIDE: [(&str, &str); 4] = [
+    ("Intent", "What you think they are trying to do and why, in one or two bullets. If it's ambiguous, say what is ambiguous."),
+    (
+        "Faults",
+        "Problems with the draft as it stands: conflicts with how the project actually works, things that already exist, \
 wrong assumptions, missing edge cases, risky trade-offs. Cite file paths when the project context supports it. \
-If nothing is worth raising, write \"- Nothing so far.\"
-## Directions
-Two or three concrete next moves or alternative approaches, each with its main trade-off.
-## Questions
-One to three questions whose answers would most change the design.
+If nothing is worth raising, write \"- Nothing so far.\"",
+    ),
+    ("Directions", "Two or three concrete next moves or alternative approaches, each with its main trade-off."),
+    ("Questions", "One to three questions whose answers would most change the design."),
+];
+
+const ANALYSIS_RULES: &str = "
 
 Rules: bullets only, at most 3 per section, each under 35 words. Ground claims in the project context; \
 when the context doesn't cover something, say so instead of guessing. Never restate the draft. Do not use tools.";
+
+/// Which sections each agent writes, for `n` agents (see the spec's table).
+pub fn section_groups(n: usize) -> Vec<Vec<&'static str>> {
+    let [intent, faults, directions, questions] = SECTIONS;
+    match n {
+        0 | 1 => vec![vec![intent, faults, directions, questions]],
+        2 => vec![vec![intent, faults], vec![directions, questions]],
+        3 => vec![vec![intent, faults], vec![directions], vec![questions]],
+        _ => vec![vec![intent], vec![faults], vec![directions], vec![questions]],
+    }
+}
+
+/// The system prompt for an agent writing `sections`. With all four it is
+/// exactly the single-agent prompt.
+pub fn analysis_system(sections: &[&str]) -> String {
+    let lead = match sections.len() {
+        1 => "exactly this one section and nothing else".to_owned(),
+        k => format!("exactly these {} sections, in this order, and nothing else", ["two", "three", "four"][k.clamp(2, 4) - 2]),
+    };
+    let mut prompt = format!("{ANALYSIS_INTRO}Respond in Markdown with {lead}:");
+    for name in sections {
+        let guide = SECTION_GUIDE.iter().find(|(n, _)| n == name).map_or("", |(_, g)| *g);
+        prompt.push_str(&format!("\n## {name}\n{guide}"));
+    }
+    if sections.len() < SECTIONS.len() {
+        prompt.push_str("\n\nThe other parts of the notes are written separately; write only the sections above.");
+    }
+    prompt.push_str(ANALYSIS_RULES);
+    prompt
+}
 
 const BRIEF_FORMAT: &str = "\
 Write a project brief in Markdown, at most {WORDS} words, with these sections: \
@@ -71,6 +106,7 @@ pub fn analysis_request(
     brief: Option<&str>,
     snippets: &[Snippet],
     provider: &Provider,
+    sections: &[&str],
 ) -> ChatRequest {
     let budget = provider.context_budget_chars();
     let mut project = String::new();
@@ -97,7 +133,7 @@ pub fn analysis_request(
     }
 
     ChatRequest {
-        system: ANALYSIS_SYSTEM.to_owned(),
+        system: analysis_system(sections),
         user: format!("{project}<draft>\n{}\n</draft>", shape_draft(draft)),
         max_tokens: 900,
         // CWD lets Claude Code pick up the project's CLAUDE.md conventions.
@@ -199,7 +235,7 @@ mod tests {
 
     #[test]
     fn analysis_without_project_still_works() {
-        let req = analysis_request("add caching to search", None, None, &[], &local());
+        let req = analysis_request("add caching to search", None, None, &[], &local(), &SECTIONS);
         assert!(req.user.contains("No project selected") && req.cwd.is_none());
         for s in SECTIONS {
             assert!(req.system.contains(&format!("## {s}")));
@@ -221,5 +257,55 @@ mod tests {
         assert!(shaped.starts_with('é') && shaped.ends_with("TAIL"));
         assert!(shaped.len() < 4_100, "{}", shaped.len());
         assert_eq!(shape_draft_to("short", 4_000), "short");
+    }
+
+    /// Today's analysis prompt, verbatim. The four-section assembly must not drift from it.
+    const TODAYS_PROMPT: &str = "\
+You are LiveBrainstorm, a sharp brainstorming partner sitting beside a software engineer's draft. \
+The draft is unfinished thinking typed in real time about the project described in <project>. \
+Your job is to make their thinking better, not to finish their writing.
+
+Respond in Markdown with exactly these four sections, in this order, and nothing else:
+## Intent
+What you think they are trying to do and why, in one or two bullets. If it's ambiguous, say what is ambiguous.
+## Faults
+Problems with the draft as it stands: conflicts with how the project actually works, things that already exist, \
+wrong assumptions, missing edge cases, risky trade-offs. Cite file paths when the project context supports it. \
+If nothing is worth raising, write \"- Nothing so far.\"
+## Directions
+Two or three concrete next moves or alternative approaches, each with its main trade-off.
+## Questions
+One to three questions whose answers would most change the design.
+
+Rules: bullets only, at most 3 per section, each under 35 words. Ground claims in the project context; \
+when the context doesn't cover something, say so instead of guessing. Never restate the draft. Do not use tools.";
+
+    #[test]
+    fn all_four_sections_is_todays_prompt() {
+        assert_eq!(analysis_system(&SECTIONS), TODAYS_PROMPT);
+    }
+
+    #[test]
+    fn a_lane_prompt_has_only_its_own_headings() {
+        let faults = analysis_system(&["Faults"]);
+        assert!(faults.contains("## Faults") && faults.contains("exactly this one section"));
+        for other in ["## Intent", "## Directions", "## Questions"] {
+            assert!(!faults.contains(other), "{other}");
+        }
+        assert!(faults.contains("written separately"), "tells the agent the rest is someone else's job");
+        let pair = analysis_system(&["Directions", "Questions"]);
+        assert!(pair.contains("exactly these two sections") && pair.contains("## Directions") && pair.contains("## Questions"));
+        assert!(!pair.contains("## Faults"));
+    }
+
+    #[test]
+    fn sections_are_grouped_per_the_spec() {
+        let names = |n| section_groups(n).iter().map(|g| g.join("+")).collect::<Vec<_>>();
+        assert_eq!(names(1), ["Intent+Faults+Directions+Questions"]);
+        assert_eq!(names(2), ["Intent+Faults", "Directions+Questions"]);
+        assert_eq!(names(3), ["Intent+Faults", "Directions", "Questions"]);
+        assert_eq!(names(4), ["Intent", "Faults", "Directions", "Questions"]);
+        assert_eq!(names(8), names(4));
+        assert_eq!(names(0), names(1));
     }
 }

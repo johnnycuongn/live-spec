@@ -83,6 +83,25 @@ pub async fn pre_phase(input: PreInput<'_>, budget: Duration) -> PreOutcome {
     PreOutcome::Analyze { snippets, notice: gate_notice.or(rerank_notice) }
 }
 
+/// Joins the lanes' texts in lane order. A failed lane becomes a notice
+/// naming its sections; only if every lane failed is the first error returned.
+pub fn merge_lanes(groups: &[Vec<&str>], results: Vec<crate::Result<String>>) -> crate::Result<(String, Vec<String>)> {
+    let (mut texts, mut notices, mut first_error) = (Vec::new(), Vec::new(), None);
+    for (sections, result) in groups.iter().zip(results) {
+        match result {
+            Ok(text) => texts.push(text.trim().to_owned()),
+            Err(e) => {
+                notices.push(format!("Couldn't write {}: {e}", sections.join(" and ")));
+                first_error.get_or_insert(e);
+            }
+        }
+    }
+    if texts.is_empty() {
+        return Err(first_error.unwrap_or_else(|| Error::Provider("No notes were written.".into())));
+    }
+    Ok((texts.join("\n"), notices))
+}
+
 fn unavailable(e: &Error) -> String {
     format!("Jev unavailable, using plain matching: {e}")
 }
@@ -193,5 +212,29 @@ mod tests {
         let off = PreInput { gate: false, rerank: false, ..input(&idx, Some(&jev), Some("old"), 1) };
         assert_eq!(pre_phase(off, PRE_BUDGET).await, PreOutcome::Analyze { snippets: keyword(&idx, 1), notice: None });
         assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn lanes_join_in_lane_order() {
+        let groups = vec![vec!["Intent", "Faults"], vec!["Directions", "Questions"]];
+        let merged = merge_lanes(&groups, vec![Ok("## Intent\n- i\n## Faults\n- f\n".into()), Ok("## Directions\n- d\n## Questions\n- q".into())]);
+        let (text, notices) = merged.unwrap();
+        assert_eq!(text, "## Intent\n- i\n## Faults\n- f\n## Directions\n- d\n## Questions\n- q");
+        assert!(notices.is_empty());
+    }
+
+    #[test]
+    fn a_failed_lane_becomes_a_notice() {
+        let groups = vec![vec!["Intent", "Faults"], vec!["Directions", "Questions"]];
+        let (text, notices) = merge_lanes(&groups, vec![Ok("## Intent\n- i".into()), Err(Error::Provider("rate limited".into()))]).unwrap();
+        assert_eq!(text, "## Intent\n- i");
+        assert_eq!(notices, ["Couldn't write Directions and Questions: rate limited"]);
+    }
+
+    #[test]
+    fn every_lane_failing_is_an_error() {
+        let groups = vec![vec!["Intent"], vec!["Faults"]];
+        let err = merge_lanes(&groups, vec![Err(Error::Provider("first".into())), Err(Error::Provider("second".into()))]).unwrap_err();
+        assert_eq!(err.to_string(), "first");
     }
 }
