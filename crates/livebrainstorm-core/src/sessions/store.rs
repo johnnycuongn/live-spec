@@ -416,9 +416,9 @@ impl SessionStore {
         let inner = &mut *guard;
         let mut tab = self.existing_tab(inner, id)?;
         // Never reuse an id still in the history, even if the file lost its counter.
-        let next = tab.history.iter().map(|h| h.id + 1).max().unwrap_or(1).max(tab.next_snapshot);
+        let next = tab.history.iter().map(|h| h.id.saturating_add(1)).max().unwrap_or(1).max(tab.next_snapshot);
         snap.id = next;
-        tab.next_snapshot = next + 1;
+        tab.next_snapshot = next.saturating_add(1);
         tab.history.insert(0, snap);
         tab.history.truncate(HISTORY_LEN);
         self.put_tab(inner, tab)?;
@@ -781,6 +781,22 @@ mod tests {
         assert_eq!(t.history.iter().map(|h| h.id).collect::<Vec<_>>(), [7, 6, 5, 4, 3]);
         assert_eq!(t.history[0].draft, "draft 6");
         assert_eq!(t.next_snapshot, 8);
+    }
+
+    #[test]
+    fn a_damaged_snapshot_counter_at_the_top_of_the_range_does_not_panic() {
+        let (dir, s) = store();
+        let tab = s.create_tab("w-1", None).unwrap();
+        drop(s);
+        let path = sessions(&dir).join(format!("tabs/{}.json", tab.id));
+        let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        doc["nextSnapshot"] = u64::MAX.into();
+        doc["history"] = serde_json::json!([{ "id": u64::MAX }]);
+        std::fs::write(&path, serde_json::to_vec(&doc).unwrap()).unwrap();
+        let s = at(&dir);
+        assert_eq!(s.record_snapshot(&tab.id, snap("x")).unwrap(), u64::MAX);
+        assert!(!s.tab(&tab.id).unwrap().history.is_empty(), "saved, and the mutex is not poisoned");
+        assert!(s.save_draft(&tab.id, "still works".into()).is_ok());
     }
 
     #[test]
