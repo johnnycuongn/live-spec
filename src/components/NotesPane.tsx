@@ -74,12 +74,12 @@ function CheckRow({ check }: { check: CheckResult }) {
 /**
  * `‹ 2 of 5 ›` and the time of the analysis on screen. Hidden with fewer than
  * two, and over the live notes while a run is under way (history[0] isn't
- * them yet). Over an older analysis it stays, so a run that starts while you
+ * them yet) or finished but not yet refetched (`historyStale`). Over an older analysis it stays, so a run that starts while you
  * browse never strands you there.
  */
 function HistoryHeader({ view, onView }: { view: TabView; onView: (index: number) => void }) {
   const pos = historyPosition(view.viewing, view.history.length);
-  if (!pos.show || (view.viewing === 0 && view.analysis.status === "thinking")) return null;
+  if (!pos.show || view.historyStale || (view.viewing === 0 && view.analysis.status === "thinking")) return null;
   // The latest is the live state: it has history[0]'s time once that analysis is what's on screen.
   const shown = view.viewing > 0 ? view.history[view.viewing] : view.analysis.status === "done" ? view.history[0] : undefined;
   return (

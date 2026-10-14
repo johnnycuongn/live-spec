@@ -211,6 +211,34 @@ describe("history", () => {
     expect(s.getState().history.map((h) => h.id)).toEqual([4, 3, 2, 1]);
   });
 
+  it("between done and the refetch the history isn't current, and a failed refetch leaves it that way", async () => {
+    const resolvers: ((t: Tab) => void)[] = [];
+    const rejecters: ((e: unknown) => void)[] = [];
+    const getTab = vi.fn(
+      () =>
+        new Promise<Tab>((resolve, reject) => {
+          resolvers.push(resolve);
+          rejecters.push(reject);
+        }),
+    );
+    const { s, calls } = harness(tab({ history: three }), getTab);
+    expect(s.getState().historyStale).toBe(false);
+    s.setDraft(`${DRAFT}, first change to it`);
+    vi.advanceTimersByTime(1000);
+    calls[0].emit({ type: "started" });
+    calls[0].emit({ type: "done", text: "## Intent\n- one" });
+    expect(s.getState().historyStale).toBe(true); // history[0] is still the previous analysis
+    resolvers[0](tab({ history: [snap({ id: 4 }), ...three] }));
+    await settle();
+    expect(s.getState().historyStale).toBe(false);
+    s.setDraft(`${DRAFT}, second change to it`);
+    vi.advanceTimersByTime(1000);
+    calls[1].emit({ type: "done", text: "## Intent\n- two" });
+    rejecters[1](new Error("offline"));
+    await settle();
+    expect(s.getState().historyStale).toBe(true); // wrong would be worse than hidden
+  });
+
   it("skips and errors never refetch", async () => {
     const getTab = vi.fn(async () => tab());
     const { s, calls } = harness(tab(), getTab);

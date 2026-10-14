@@ -55,6 +55,12 @@ export interface TabView {
   viewing: number;
   /** Newest first, at most 5 (sessions::HISTORY_LEN). */
   history: Snapshot[];
+  /**
+   * True from `done` until the history refetch lands (for good if it fails, until the
+   * next `done`): history[0] is then the previous analysis, not the notes on screen,
+   * so the position header must not label or step through it.
+   */
+  historyStale: boolean;
 }
 
 export class TabSession {
@@ -67,6 +73,7 @@ export class TabSession {
   private analysis: AnalysisState = initialAnalysis;
   private history: Snapshot[] = [];
   private viewing = 0;
+  private historyStale = false;
   private context = "";
   private instructions = "";
   private lastSent = "";
@@ -118,6 +125,7 @@ export class TabSession {
     const latest = tab.history[0];
     this.draft = tab.draft;
     this.history = tab.history;
+    this.historyStale = false;
     this.viewing = 0;
     this.analysis = latest ? snapshotAnalysis(latest) : initialAnalysis;
     this.context = latest?.context ?? "";
@@ -260,6 +268,7 @@ export class TabSession {
         this.lastAnalyzed = lastAnalyzedAfter(this.lastAnalyzed, ev, text, ctx);
         if (ev.type === "started") this.viewing = 0; // live streaming always shows the latest
         this.analysis = applyEvent(this.analysis, ev);
+        if (ev.type === "done") this.historyStale = true; // until the refetch below lands
         this.emit();
         if (ev.type === "done") this.refreshHistory();
       });
@@ -281,10 +290,11 @@ export class TabSession {
         // `viewing` is an index and `done` prepends (evicting the oldest at 5): keep the snapshot on screen.
         const viewed = this.viewing > 0 ? this.history[this.viewing]?.id : undefined;
         this.history = tab.history;
+        this.historyStale = false;
         this.viewing = viewed === undefined ? 0 : Math.max(tab.history.findIndex((h) => h.id === viewed), 0);
         this.emit();
       },
-      () => {}, // the notes on screen are right; the next `done` refetches
+      () => {}, // the notes on screen are right and the history stays stale (header hidden); the next `done` refetches
     );
   }
 
@@ -298,6 +308,7 @@ export class TabSession {
       contextDirty: this.contextDirty,
       viewing: this.viewing,
       history: this.history,
+      historyStale: this.historyStale,
     };
     this.listeners.forEach((l) => l());
   }
