@@ -461,6 +461,7 @@ pub async fn move_tab(app: AppHandle, tab_id: String, to: Option<String>) -> Res
         check_id(window)?;
     }
     let state = app.state::<AppState>();
+    let new_window = to.is_none();
     let (from, to) = state.sessions.move_tab(&tab_id, to.as_deref())?;
     if from == to {
         return Ok(to); // already there: nothing moved, and its run goes on
@@ -478,7 +479,11 @@ pub async fn move_tab(app: AppHandle, tab_id: String, to: Option<String>) -> Res
                 // Put it back rather than strand it in a window that isn't on screen.
                 let _ = state.sessions.move_tab(&tab_id, Some(from.as_str()));
                 let _ = state.sessions.activate(&from, &tab_id);
-                let _ = state.sessions.close_window(&to);
+                // Only a window this call made is dropped: closing one that existed (its
+                // window is just not on screen) would send its other tabs to Recently closed.
+                if new_window {
+                    let _ = state.sessions.close_window(&to);
+                }
                 events::workspace_changed(&app, vec![from]);
                 return Err(e);
             }

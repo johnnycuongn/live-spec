@@ -7,7 +7,9 @@
 //! Tauri's default menu, so ⌘H and ⌘M keep working.
 
 use livebrainstorm_core::menu::{self as spec, MenuItemSpec};
-use tauri::menu::{AboutMetadata, Menu, MenuBuilder, MenuEvent, MenuItem, MenuItemBuilder, Submenu, SubmenuBuilder};
+use tauri::menu::{
+    AboutMetadata, Menu, MenuBuilder, MenuEvent, MenuItem, MenuItemBuilder, Submenu, SubmenuBuilder, WINDOW_SUBMENU_ID,
+};
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
 use crate::events;
@@ -37,7 +39,12 @@ pub fn build(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         SubmenuBuilder::new(app, &info.name).about(Some(about)).separator().item(&settings).separator().quit().build()?;
     let file = groups(app, SubmenuBuilder::new(app, "File"), &spec::FILE)?;
     let edit = SubmenuBuilder::new(app, "Edit").undo().redo().separator().cut().copy().paste().select_all().build()?;
-    let window = groups(app, SubmenuBuilder::new(app, "Window").minimize().maximize().separator(), &spec::WINDOW)?;
+    // The id makes macOS list the open windows here and add Bring All to Front.
+    let window = groups(
+        app,
+        SubmenuBuilder::with_id(app, WINDOW_SUBMENU_ID, "Window").minimize().maximize().separator(),
+        &spec::WINDOW,
+    )?;
     MenuBuilder::new(app).items(&[&app_menu, &file, &edit, &window]).build()
 }
 

@@ -38,10 +38,23 @@ pub fn run() {
                 eprintln!("LiveBrainstorm: couldn't read the saved windows: {e}");
                 vec!["w-1".to_owned()]
             });
+            // One window failing to build must not stop the rest; with none on screen the
+            // app would run invisible, so then the last error ends the launch.
+            let mut built = 0;
+            let mut last_error = None;
             for id in ids {
-                windows::build(app.handle(), &id)?;
+                match windows::build(app.handle(), &id) {
+                    Ok(_) => built += 1,
+                    Err(e) => {
+                        eprintln!("LiveBrainstorm: couldn't open window {id}: {e}");
+                        last_error = Some(e);
+                    }
+                }
             }
-            Ok(())
+            match last_error {
+                Some(e) if built == 0 => Err(e.into()),
+                _ => Ok(()),
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_settings,
