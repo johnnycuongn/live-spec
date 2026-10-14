@@ -5,6 +5,7 @@
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use livebrainstorm_core::agents;
 use livebrainstorm_core::analysis::{self, PreInput, PreOutcome, PRE_BUDGET};
 use livebrainstorm_core::jev::check::{self, CheckEvent, CheckResult};
 use livebrainstorm_core::llm::Chunk;
@@ -14,6 +15,7 @@ use livebrainstorm_core::settings::{ProviderSettings, Settings, Tier};
 use livebrainstorm_core::{prompt, Error, Result};
 use serde::Serialize;
 use tauri::ipc::Channel;
+use tokio::sync::oneshot;
 use tauri::{AppHandle, Manager, State};
 
 use crate::provider;
@@ -23,8 +25,8 @@ use crate::state::{replace_task, AppState};
 #[derive(Clone, Serialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum UiEvent {
-    Text { text: String },
-    Activity { label: String },
+    Text { text: String, lane: usize },
+    Activity { label: String, lane: usize },
     Done { text: String },
     Error { message: String },
     Progress { downloaded: u64, total: Option<u64> },
@@ -53,10 +55,11 @@ fn send(ch: &Channel<UiEvent>, ev: UiEvent) {
     let _ = ch.send(ev); // window may be gone; nothing useful to do
 }
 
+/// The brief streams as one lane.
 fn on_chunk(ch: &Channel<UiEvent>) -> impl FnMut(Chunk) + Send + '_ {
     move |c| match c {
-        Chunk::Text(text) => send(ch, UiEvent::Text { text }),
-        Chunk::Activity(label) => send(ch, UiEvent::Activity { label }),
+        Chunk::Text(text) => send(ch, UiEvent::Text { text, lane: 0 }),
+        Chunk::Activity(label) => send(ch, UiEvent::Activity { label, lane: 0 }),
     }
 }
 
@@ -191,55 +194,86 @@ pub async fn analyze(app: AppHandle, draft: String, previous_draft: Option<Strin
         let state = task_app.state::<AppState>();
         let settings = state.settings();
         let index = state.project();
-        let result = async {
-            let provider = provider::resolve(&task_app, Tier::Fast).await?;
-            let brief = state.brief.read().expect("brief lock").as_ref().map(|b| b.text.clone());
-            let budget = provider.context_budget_chars();
-            let max_files = if budget < 40_000 { 3 } else { 5 };
-
-            // Jev sends text to TypeSafe, so never for the Local provider.
-            let jev = if settings.jev_allowed() { provider::jev(&task_app) } else { None };
-            let pre = analysis::pre_phase(
-                PreInput {
-                    draft: &draft,
-                    previous_draft: previous_draft.as_deref(),
-                    index: index.as_deref(),
-                    max_files,
-                    budget_chars: budget / 4,
-                    jev: jev.as_ref(),
-                    gate: settings.jev_gate_enabled(),
-                    rerank: settings.jev_rerank_enabled(),
-                },
-                PRE_BUDGET,
-            )
-            .await;
-            let PreOutcome::Analyze { snippets, notice } = pre else { return Ok(None) };
-            send(&on_event, UiEvent::Started);
-            if let Some(message) = notice {
-                send(&on_event, UiEvent::Notice { message });
-            }
-
-            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, &prompt::SECTIONS);
-            provider.stream(&req, &mut on_chunk(&on_event)).await.map(Some)
-        }
-        .await;
-        let text = match result {
-            Ok(Some(text)) => text,
-            Ok(None) => return send(&on_event, UiEvent::Skipped),
+        let provider = match provider::resolve(&task_app, Tier::Fast).await {
+            Ok(provider) => provider,
             Err(e) => return send(&on_event, UiEvent::Error { message: e.to_string() }),
         };
-        send(&on_event, UiEvent::Done { text: text.clone() });
+        let brief = state.brief.read().expect("brief lock").as_ref().map(|b| b.text.clone());
+        let budget = provider.context_budget_chars();
+        let max_files = if budget < 40_000 { 3 } else { 5 };
 
-        // "Checked in code" fills in after the notes. The next analysis
-        // aborts this task, checks included.
-        if !settings.jev_check_enabled() {
-            return;
+        // Jev sends text to TypeSafe, so never for the Local provider.
+        let jev = if settings.jev_allowed() { provider::jev(&task_app) } else { None };
+        let pre = analysis::pre_phase(
+            PreInput {
+                draft: &draft,
+                previous_draft: previous_draft.as_deref(),
+                index: index.as_deref(),
+                max_files,
+                budget_chars: budget / 4,
+                jev: jev.as_ref(),
+                gate: settings.jev_gate_enabled(),
+                rerank: settings.jev_rerank_enabled(),
+            },
+            PRE_BUDGET,
+        )
+        .await;
+        let PreOutcome::Analyze { snippets, notice } = pre else { return send(&on_event, UiEvent::Skipped) };
+        send(&on_event, UiEvent::Started);
+        if let Some(message) = notice {
+            send(&on_event, UiEvent::Notice { message });
         }
-        if let (Some(index), Some(faults)) = (index, prompt::section_body(&text, "Faults")) {
-            if let Some(jev) = provider::jev(&task_app) {
-                check::run(&jev, &index, &faults, |ev| send(&on_event, ev.into())).await;
+
+        // Each lane writes some of the sections; up to one agent per section.
+        // A plain `for` loop, not `.map(…)`: closures over borrowed items trip
+        // rustc's Send check inside this spawned task.
+        let groups = prompt::section_groups(settings.effective_note_agents());
+        let (faults_tx, faults_rx) = oneshot::channel::<String>();
+        let mut faults_tx = Some(faults_tx);
+        let mut lanes = Vec::new();
+        for (lane, sections) in groups.iter().enumerate() {
+            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, sections);
+            let tx = if sections.contains(&"Faults") { faults_tx.take() } else { None };
+            let (provider, on_event) = (&provider, &on_event);
+            lanes.push(async move {
+                let mut sink = |chunk: Chunk| match chunk {
+                    Chunk::Text(text) => send(on_event, UiEvent::Text { text, lane }),
+                    Chunk::Activity(label) => send(on_event, UiEvent::Activity { label, lane }),
+                };
+                let result = provider.stream(&req, &mut sink).await;
+                if let (Some(tx), Ok(text)) = (tx, &result) {
+                    let _ = tx.send(text.clone());
+                }
+                result
+            });
+        }
+        drop(faults_tx);
+
+        let write = async {
+            match analysis::merge_lanes(&groups, agents::run_limited(groups.len(), lanes).await) {
+                Ok((text, notices)) => {
+                    for message in notices {
+                        send(&on_event, UiEvent::Notice { message });
+                    }
+                    send(&on_event, UiEvent::Done { text });
+                }
+                Err(e) => send(&on_event, UiEvent::Error { message: e.to_string() }),
             }
-        }
+        };
+        // "Checked in code" starts as soon as the Faults lane finishes, while
+        // other lanes may still stream; `done` never waits for it. The next
+        // analysis aborts this task, lanes and checks included.
+        let check = async {
+            let Ok(text) = faults_rx.await else { return }; // that lane failed
+            if !settings.jev_check_enabled() {
+                return;
+            }
+            let (Some(index), Some(jev)) = (index.as_deref(), jev.as_ref()) else { return };
+            if let Some(faults) = prompt::section_body(&text, "Faults") {
+                check::run(jev, index, &faults, |ev| send(&on_event, ev.into())).await;
+            }
+        };
+        tokio::join!(write, check);
     });
     replace_task(&app.state::<AppState>().analysis, task);
     Ok(())

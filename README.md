@@ -60,6 +60,8 @@ React (Vite, Tailwind)               Rust
 
 **Live analysis:** the UI waits for a pause (configurable), sends the draft, and streams the reply into four sections. A new request aborts the previous one in Rust (which kills the `claude` process too), and stale replies are dropped by request id. If you keep typing, the last notes stay visible and the rule beside them turns dashed.
 
+With the Claude or API providers, the four sections are written by up to four agents at once (`agents.maxAgents` in settings, default 4; `agents.parallelNotes: false` turns it off). Each agent is a separate model call, so this uses more of your subscription or API budget per pause.
+
 ## Design decisions
 
 - **No custom Claude login.** Anthropic only permits subscription OAuth inside Claude Code and claude.ai. LiveBrainstorm never handles those credentials; it runs your unmodified `claude` binary in print mode, which uses your existing login. Fine for personal use; anyone you share LiveBrainstorm with should use the API-key provider.
