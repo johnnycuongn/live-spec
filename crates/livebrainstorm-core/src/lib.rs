@@ -12,6 +12,7 @@ pub mod instructions;
 pub mod jev;
 pub mod llm;
 pub mod local;
+pub mod menu;
 pub mod project;
 pub mod prompt;
 pub mod sessions;
