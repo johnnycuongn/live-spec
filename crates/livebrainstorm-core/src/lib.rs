@@ -14,6 +14,7 @@ pub mod llm;
 pub mod local;
 pub mod project;
 pub mod prompt;
+pub mod sessions;
 pub mod settings;
 pub mod shell_env;
 pub mod store;
