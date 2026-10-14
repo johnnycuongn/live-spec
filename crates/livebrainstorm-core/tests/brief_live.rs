@@ -20,7 +20,7 @@ async fn four_explorers_vs_one() {
         eprintln!("skipped: claude not found");
         return;
     };
-    let provider = Provider::ClaudeCli(ClaudeCli { binary, model: "sonnet".into(), path_env });
+    let provider = Provider::ClaudeCli(ClaudeCli::new(binary, "sonnet", path_env));
     let index = scan(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))).unwrap();
     eprintln!("{} indexed files", index.files.len());
 

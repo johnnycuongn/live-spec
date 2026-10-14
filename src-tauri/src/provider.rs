@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use livebrainstorm_core::jev::Jev;
-use livebrainstorm_core::llm::{AnthropicApi, ClaudeCli, OpenAiCompat, Provider};
+use livebrainstorm_core::llm::{AnthropicApi, ClaudeCli, OpenAiCompat, Provider, Secret};
 use livebrainstorm_core::local::catalog;
 use livebrainstorm_core::local::LocalServer;
 use livebrainstorm_core::settings::{ProviderSettings, Tier};
@@ -27,8 +27,9 @@ pub async fn resolve(app: &AppHandle, tier: Tier) -> Result<Provider> {
             let api_key = secrets::api_key()?
                 .ok_or_else(|| Error::Precondition("Add your Anthropic API key in Settings.".into()))?;
             Ok(Provider::AnthropicApi(AnthropicApi {
-                api_key,
+                api_key: Secret::new(api_key),
                 model: pick(fast_model, deep_model),
+                effort: None,
                 http: state.http.clone(),
             }))
         }
@@ -57,7 +58,7 @@ pub async fn claude_cli(binary_path: Option<String>) -> Result<ClaudeCli> {
             )
         })?,
     };
-    Ok(ClaudeCli { binary, model: String::new(), path_env })
+    Ok(ClaudeCli::new(binary, String::new(), path_env))
 }
 
 /// Starts (or reuses) the local server for `model_id`.

@@ -12,6 +12,27 @@ pub use anthropic_api::AnthropicApi;
 pub use claude_cli::ClaudeCli;
 pub use openai_compat::OpenAiCompat;
 
+/// An API key. `Debug` never prints it, so a derived `Debug` on a provider or
+/// a stray `{:?}` can't leak it into a log.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(key: impl Into<String>) -> Self {
+        Self(key.into())
+    }
+
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(***)")
+    }
+}
+
 use std::path::PathBuf;
 
 use crate::Result;
@@ -71,5 +92,17 @@ impl Provider {
             Provider::ClaudeCli(_) | Provider::AnthropicApi(_) => 120_000,
             Provider::OpenAiCompat(p) => (p.context_tokens as usize).saturating_mul(3) / 2,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_secret_never_prints() {
+        let s = Secret::new("sk-ant-api03-abc");
+        assert_eq!(format!("{s:?}"), "Secret(***)");
+        assert_eq!(s.expose(), "sk-ant-api03-abc");
     }
 }

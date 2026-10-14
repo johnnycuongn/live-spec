@@ -376,16 +376,16 @@ when the context doesn't cover something, say so instead of guessing. Never rest
         assert_eq!(names(0), names(1));
     }
 
-    use crate::llm::{AnthropicApi, ClaudeCli};
+    use crate::llm::{AnthropicApi, ClaudeCli, Secret};
     use crate::project::explore::{Note, Slice};
     use crate::project::scan::tests::fixture;
 
     fn claude() -> Provider {
-        Provider::ClaudeCli(ClaudeCli { binary: "claude".into(), model: "sonnet".into(), path_env: None })
+        Provider::ClaudeCli(ClaudeCli::new("claude".into(), "sonnet", None))
     }
 
     fn api() -> Provider {
-        Provider::AnthropicApi(AnthropicApi { api_key: "k".into(), model: "m".into(), http: reqwest::Client::new() })
+        Provider::AnthropicApi(AnthropicApi { api_key: Secret::new("k"), model: "m".into(), effort: None, http: reqwest::Client::new() })
     }
 
     #[test]

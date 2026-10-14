@@ -18,7 +18,7 @@ async fn four_lanes_vs_one() {
         eprintln!("skipped: claude not found");
         return;
     };
-    let provider = Provider::ClaudeCli(ClaudeCli { binary, model: "haiku".into(), path_env });
+    let provider = Provider::ClaudeCli(ClaudeCli::new(binary, "haiku", path_env));
     let index = scan(Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))).unwrap();
     let draft = "Every pause spawns a fresh claude -p process from ClaudeCli::stream. I want to keep one process alive, reuse it across analyze calls, and kill it when replace_task aborts the old analysis.";
     let snippets = retrieve(&index, draft, 5, 30_000);

@@ -14,7 +14,8 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 
-use super::{ChatRequest, Chunk, OnChunk};
+use super::{ChatRequest, Chunk, OnChunk, Secret};
+use crate::settings::Effort;
 use crate::{Error, Result};
 
 /// The only tools a brief explorer gets. An allowlist (`--tools`), not a
@@ -24,8 +25,13 @@ const READ_ONLY_TOOLS: &str = "Read,Glob,Grep";
 #[derive(Debug, Clone)]
 pub struct ClaudeCli {
     pub binary: PathBuf,
-    /// Model alias ("haiku", "sonnet", "opus") or a full model id.
+    /// Model alias ("haiku", "sonnet", "opus", "fable") or a full model id.
     pub model: String,
+    /// `--effort`; None leaves Claude Code's default.
+    pub effort: Option<Effort>,
+    /// The user's Anthropic API key, given to the child as ANTHROPIC_API_KEY.
+    /// None: Claude Code's own login.
+    pub api_key: Option<Secret>,
     /// PATH for the child process (see `shell_env`).
     pub path_env: Option<String>,
 }
@@ -34,7 +40,7 @@ pub struct ClaudeCli {
 /// so `--restricted` ignores settings files (no project hooks), confines file
 /// tools to the project and refuses bypassPermissions, and
 /// `--strict-mcp-config` without `--mcp-config` starts no MCP servers.
-fn args(model: &str, req: &ChatRequest) -> Vec<String> {
+fn args(model: &str, effort: Option<Effort>, req: &ChatRequest) -> Vec<String> {
     let turns = req.max_turns.unwrap_or(if req.allow_repo_tools { 40 } else { 1 }).to_string();
     let mut a: Vec<String> = [
         "-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
@@ -42,6 +48,10 @@ fn args(model: &str, req: &ChatRequest) -> Vec<String> {
     ]
     .map(String::from)
     .to_vec();
+    // Before `--tools`: that option takes a variadic list.
+    if let Some(e) = effort {
+        a.extend(["--effort", e.as_str()].map(String::from));
+    }
     if req.allow_repo_tools {
         // Keep Claude Code's own system prompt: it knows how to explore repos.
         a.extend(["--append-system-prompt", req.system.as_str(), "--max-turns", turns.as_str()].map(String::from));
@@ -55,10 +65,19 @@ fn args(model: &str, req: &ChatRequest) -> Vec<String> {
 }
 
 impl ClaudeCli {
+    /// Claude Code's own login and default effort; set `effort` / `api_key` after.
+    pub fn new(binary: PathBuf, model: impl Into<String>, path_env: Option<String>) -> Self {
+        Self { binary, model: model.into(), effort: None, api_key: None, path_env }
+    }
+
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.binary);
         if let Some(p) = &self.path_env {
             cmd.env("PATH", p);
+        }
+        // The environment, never argv: any process can list another's arguments.
+        if let Some(key) = &self.api_key {
+            cmd.env("ANTHROPIC_API_KEY", key.expose());
         }
         #[cfg(windows)]
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flash
@@ -75,7 +94,7 @@ impl ClaudeCli {
 
     pub async fn stream(&self, req: &ChatRequest, on_chunk: OnChunk<'_>) -> Result<String> {
         let mut cmd = self.command();
-        cmd.args(args(&self.model, req));
+        cmd.args(args(&self.model, self.effort, req));
         if let Some(cwd) = &req.cwd {
             cmd.current_dir(cwd);
         }
@@ -141,9 +160,13 @@ impl ClaudeCli {
 
 fn cli_error(result_text: Option<&str>, stderr: &str) -> String {
     if stderr.contains("unknown option") {
-        return "Claude Code is too old for LiveBrainstorm's restricted mode. Update it with `claude update`.".into();
+        return "Claude Code is too old for LiveBrainstorm. Update it with `claude update`.".into();
     }
     let detail = result_text.filter(|t| !t.trim().is_empty()).unwrap_or(stderr).trim();
+    if detail.contains("Invalid API key") {
+        return "Claude Code rejected the Anthropic API key. Check the key in Settings, or switch Claude Code back to your login."
+            .into();
+    }
     let detail = if detail.is_empty() { "no output" } else { detail };
     format!("Claude Code failed: {}", detail.chars().take(500).collect::<String>())
 }
@@ -229,7 +252,7 @@ mod tests {
 
     #[test]
     fn analysis_runs_with_no_tools_and_no_workspace_config() {
-        let a = args("haiku", &request(false));
+        let a = args("haiku", None, &request(false));
         assert_eq!(after(&a, "--tools"), Some(""));
         assert_eq!(after(&a, "--system-prompt"), Some("sys"));
         assert_eq!(after(&a, "--max-turns"), Some("1"));
@@ -239,7 +262,7 @@ mod tests {
 
     #[test]
     fn brief_explorers_only_get_read_only_tools() {
-        let a = args("sonnet", &request(true));
+        let a = args("sonnet", None, &request(true));
         assert_eq!(after(&a, "--tools"), Some("Read,Glob,Grep"));
         assert_eq!(after(&a, "--allowedTools"), Some("Read,Glob,Grep"));
         assert_eq!(after(&a, "--append-system-prompt"), Some("sys"));
@@ -248,15 +271,50 @@ mod tests {
     }
 
     #[test]
-    fn an_old_cli_gets_an_update_hint() {
-        assert!(cli_error(None, "error: unknown option '--restricted'").contains("claude update"));
+    fn errors_say_what_to_do() {
+        assert_eq!(
+            cli_error(None, "error: unknown option '--effort'"),
+            "Claude Code is too old for LiveBrainstorm. Update it with `claude update`."
+        );
+        assert_eq!(
+            cli_error(Some("Invalid API key · Fix external API key"), ""),
+            "Claude Code rejected the Anthropic API key. Check the key in Settings, or switch Claude Code back to your login."
+        );
         assert_eq!(cli_error(Some("boom"), ""), "Claude Code failed: boom");
+    }
+
+    #[test]
+    fn effort_is_passed_only_when_set() {
+        let a = args("haiku", None, &request(false));
+        assert!(!a.contains(&"--effort".into()), "Default leaves Claude Code's own effort");
+        assert_eq!(after(&args("haiku", Some(Effort::Low), &request(false)), "--effort"), Some("low"));
+        let a = args("sonnet", Some(Effort::Xhigh), &request(true));
+        assert_eq!(after(&a, "--effort"), Some("xhigh"));
+        assert_eq!(after(&a, "--tools"), Some("Read,Glob,Grep"), "the variadic tool list still ends where it should");
+    }
+
+    #[test]
+    fn the_api_key_goes_in_the_environment_never_in_args() {
+        use std::ffi::OsStr;
+        let cli = ClaudeCli {
+            api_key: Some(Secret::new("sk-ant-secret")),
+            effort: Some(Effort::Low),
+            ..ClaudeCli::new("claude".into(), "haiku", None)
+        };
+        let cmd = cli.command();
+        let envs: Vec<_> = cmd.as_std().get_envs().collect();
+        assert!(envs.contains(&(OsStr::new("ANTHROPIC_API_KEY"), Some(OsStr::new("sk-ant-secret")))));
+        let a = args(&cli.model, cli.effort, &request(false));
+        assert!(!a.iter().any(|x| x.contains("sk-ant")), "every process can read another's argv");
+        assert!(!format!("{cli:?}").contains("sk-ant-secret"), "Debug output never carries the key");
+        let login = ClaudeCli::new("claude".into(), "haiku", None).command();
+        assert!(!login.as_std().get_envs().any(|(k, _)| k == "ANTHROPIC_API_KEY"), "login mode leaves the environment alone");
     }
 
     #[test]
     fn a_turn_limit_overrides_the_default() {
         let req = ChatRequest { max_turns: Some(20), ..request(true) };
-        assert_eq!(after(&args("sonnet", &req), "--max-turns"), Some("20"));
-        assert_eq!(after(&args("sonnet", &request(true)), "--max-turns"), Some("40"));
+        assert_eq!(after(&args("sonnet", None, &req), "--max-turns"), Some("20"));
+        assert_eq!(after(&args("sonnet", None, &request(true)), "--max-turns"), Some("40"));
     }
 }
