@@ -20,6 +20,8 @@ import { BriefDrawer } from "./components/BriefDrawer";
 import { InstructionsDrawer } from "./components/InstructionsDrawer";
 import { TemplateList } from "./components/TemplateList";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { UsageFooter } from "./components/UsageFooter";
+import { UsageDialog } from "./components/UsageDialog";
 import { Button, cx } from "./components/ui";
 
 export default function App() {
@@ -27,6 +29,7 @@ export default function App() {
   const pj = useProjects();
   const [settings, setSettings] = useState<Settings | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
   const [showInstructions, setShowInstructions] = useState(false);
   /** The project whose brief drawer is open; any project in the sidebar can open it. */
   const [briefRoot, setBriefRoot] = useState<string | null>(null);
@@ -82,14 +85,14 @@ export default function App() {
   // Esc closes either drawer. The settings <dialog> handles its own Esc.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !showSettings) {
+      if (e.key === "Escape" && !showSettings && !showUsage) {
         setBriefRoot(null);
         setShowInstructions(false);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [showSettings]);
+  }, [showSettings, showUsage]);
 
   const toggleSidebar = () => {
     const next = !collapsed;
@@ -221,6 +224,7 @@ export default function App() {
           onShowBrief={showBrief}
           onBuildBrief={buildBrief}
           onOpenSettings={() => setShowSettings(true)}
+          footer={<UsageFooter onOpen={() => setShowUsage(true)} />}
         />
         {session && view ? (
           <>
@@ -300,6 +304,7 @@ export default function App() {
       </main>
 
       {showSettings && settings && <SettingsDialog settings={settings} onSave={saveSettings} onClose={() => setShowSettings(false)} />}
+      {showUsage && <UsageDialog onClose={() => setShowUsage(false)} />}
     </div>
   );
 }

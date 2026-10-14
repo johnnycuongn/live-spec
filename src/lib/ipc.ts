@@ -249,6 +249,7 @@ export const api = {
     onEvent: (e: UiEvent) => void,
   ) => stream("analyze", { tabId, draft, previousDraft, instructions, context }, onEvent),
   cancelAnalysis: (tabId: string) => invoke<void>("cancel_analysis", { tabId }),
+  usageReport: (sinceHour: number) => invoke<UsageBucket[]>("usage_report", { sinceHour }),
 
   listWorkspace: (window: string) => invoke<WindowView>("list_workspace", { window }),
   getTab: (tabId: string) => invoke<Tab>("get_tab", { tabId }),

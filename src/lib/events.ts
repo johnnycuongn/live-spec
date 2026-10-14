@@ -48,3 +48,8 @@ export const onSettingsChanged = (fn: () => void): Promise<UnlistenFn> => listen
 /** After any window saves instructions or templates. Global: each window decides what to refetch. */
 export const onInstructionsChanged = (fn: (e: InstructionsChangedEvent) => void): Promise<UnlistenFn> =>
   listen<InstructionsChangedEvent>("instructions-changed", (e) => fn(e.payload));
+
+/** After a run is recorded in the usage ledger, at most once a second, in every window. */
+export function onUsageChanged(fn: () => void): Promise<UnlistenFn> {
+  return listen("usage-changed", () => fn());
+}
