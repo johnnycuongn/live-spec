@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, errorMessage, type ProjectSummary, type Settings } from "./lib/ipc";
 import { useLiveAnalysis } from "./lib/useLiveAnalysis";
+import { activityLine } from "./lib/brief";
 import { TopBar } from "./components/TopBar";
 import { DraftPane } from "./components/DraftPane";
 import { NotesPane } from "./components/NotesPane";
@@ -91,7 +92,7 @@ export default function App() {
     api
       .buildBrief((ev) => {
         if (ev.type === "text") setBriefLive((t) => t + ev.text);
-        else if (ev.type === "activity") setBriefActivity((a) => [...a, ev.label]);
+        else if (ev.type === "activity") setBriefActivity((a) => [...a, activityLine(ev.label, ev.lane)]);
         else if (ev.type === "done") {
           setBriefBuilding(false);
           // Rescan: picks up the saved brief and any files changed meanwhile.
