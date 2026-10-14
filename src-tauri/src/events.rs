@@ -2,11 +2,13 @@
 //! Names and payloads mirror `src/lib/events.ts`.
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Webview};
 
 pub const BRIEF_STATUS: &str = "brief-status";
 pub const WORKSPACE_CHANGED: &str = "workspace-changed";
 pub const MENU: &str = "menu";
+pub const SETTINGS_CHANGED: &str = "settings-changed";
+pub const INSTRUCTIONS_CHANGED: &str = "instructions-changed";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -48,4 +50,24 @@ pub fn brief_status(app: &AppHandle, root: &str, state: BriefState, message: Opt
 
 pub fn workspace_changed(app: &AppHandle, windows: Vec<String>) {
     let _ = app.emit(WORKSPACE_CHANGED, WorkspaceChanged { windows });
+}
+
+/// After saving instructions (`root` is that project, "" for no project) or templates
+/// (`root` ""). `source` is the saving window's label: it skips its own event.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstructionsChanged {
+    pub root: String,
+    pub source: String,
+}
+
+/// Every window calls `get_settings`. No payload.
+pub fn settings_changed(app: &AppHandle) {
+    let _ = app.emit(SETTINGS_CHANGED, ()); // a window may be gone
+}
+
+/// Other windows refetch; `source` lets the saving window skip its own event, whose copy
+/// can be older than what was typed since. `Webview::emit` reaches every window, like `app.emit`.
+pub fn instructions_changed(from: &Webview, root: String) {
+    let _ = from.emit(INSTRUCTIONS_CHANGED, InstructionsChanged { root, source: from.label().to_owned() });
 }

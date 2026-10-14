@@ -21,7 +21,7 @@ use livebrainstorm_core::{prompt, Error, Result};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tokio::sync::oneshot;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, State, Webview};
 
 use crate::events::{self, BriefState};
 use crate::provider;
@@ -93,6 +93,7 @@ pub async fn save_settings(app: AppHandle, settings: Settings) -> Result<()> {
     settings.save(&state.settings_path)?;
     let leaving_local = !matches!(settings.provider, ProviderSettings::Local { .. });
     *state.settings.write().expect("settings lock") = settings;
+    events::settings_changed(&app); // other windows call get_settings
     if leaving_local {
         if let Some(server) = state.local.lock().await.take() {
             server.stop().await; // free the RAM
@@ -303,18 +304,29 @@ pub fn get_instructions(state: State<'_, AppState>, root: String) -> Instruction
 }
 
 #[tauri::command]
-pub fn save_project_instructions(state: State<'_, AppState>, root: String, instructions: ProjectInstructions) -> Result<()> {
-    state.instructions.save_project(&root, instructions)
+pub fn save_project_instructions(
+    state: State<'_, AppState>,
+    webview: Webview,
+    root: String,
+    instructions: ProjectInstructions,
+) -> Result<()> {
+    state.instructions.save_project(&root, instructions)?;
+    events::instructions_changed(&webview, root);
+    Ok(())
 }
 
 #[tauri::command]
-pub fn save_templates(state: State<'_, AppState>, templates: Vec<Template>) -> Result<()> {
-    state.instructions.save_templates(templates)
+pub fn save_templates(state: State<'_, AppState>, webview: Webview, templates: Vec<Template>) -> Result<()> {
+    state.instructions.save_templates(templates)?;
+    events::instructions_changed(&webview, String::new());
+    Ok(())
 }
 
 #[tauri::command]
-pub fn restore_starter_templates(state: State<'_, AppState>) -> Result<Vec<Template>> {
-    state.instructions.restore_starters()
+pub fn restore_starter_templates(state: State<'_, AppState>, webview: Webview) -> Result<Vec<Template>> {
+    let templates = state.instructions.restore_starters()?;
+    events::instructions_changed(&webview, String::new());
+    Ok(templates)
 }
 
 // ---------- sessions ----------
