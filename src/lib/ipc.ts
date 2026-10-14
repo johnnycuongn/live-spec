@@ -211,11 +211,17 @@ export const api = {
     invoke<void>("save_project_instructions", { root, instructions }),
   saveTemplates: (templates: Template[]) => invoke<void>("save_templates", { templates }),
   restoreStarterTemplates: () => invoke<Template[]>("restore_starter_templates"),
-  buildBrief: (onEvent: (e: UiEvent) => void) => stream("build_brief", {}, onEvent),
+  buildBrief: (root: string, onEvent: (e: UiEvent) => void) => stream("build_brief", { root }, onEvent),
 
-  analyze: (draft: string, previousDraft: string | null, instructions: string, onEvent: (e: UiEvent) => void) =>
-    stream("analyze", { draft, previousDraft, instructions }, onEvent),
-  cancelAnalysis: () => invoke<void>("cancel_analysis"),
+  analyze: (
+    tabId: string,
+    draft: string,
+    previousDraft: string | null,
+    instructions: string,
+    context: string,
+    onEvent: (e: UiEvent) => void,
+  ) => stream("analyze", { tabId, draft, previousDraft, instructions, context }, onEvent),
+  cancelAnalysis: (tabId: string) => invoke<void>("cancel_analysis", { tabId }),
 
   listWorkspace: (window: string) => invoke<WindowView>("list_workspace", { window }),
   getTab: (tabId: string) => invoke<Tab>("get_tab", { tabId }),

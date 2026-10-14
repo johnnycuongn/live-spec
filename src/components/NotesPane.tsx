@@ -1,11 +1,12 @@
 import type { CheckResult } from "../lib/ipc";
 import { VERDICT, checkLocation, checkSummary, plainClaim } from "../lib/checks";
 import { SECTIONS, parseSections, type SectionKey } from "../lib/sections";
-import type { useLiveAnalysis } from "../lib/useLiveAnalysis";
+import type { AnalysisState } from "../lib/analysisState";
 import { MiniMarkdown } from "./MiniMarkdown";
 import { Button, Eyebrow, cx } from "./ui";
 
-type Analysis = ReturnType<typeof useLiveAnalysis>;
+/** The shown tab's analysis, whether the draft has moved on since, and "Try again". */
+type Analysis = AnalysisState & { stale: boolean; rerun: () => void };
 type RuleState = "idle" | "thinking" | "stale" | "fresh";
 
 interface Props {
