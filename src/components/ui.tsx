@@ -18,7 +18,7 @@ export function Button({ variant = "default", className, ...props }: ButtonHTMLA
     <button
       type="button"
       className={cx(
-        "inline-flex cursor-pointer items-center gap-2 text-[13px] transition-colors disabled:cursor-default disabled:opacity-50",
+        "inline-flex cursor-pointer items-center gap-2 whitespace-nowrap text-[13px] transition-colors disabled:cursor-default disabled:opacity-50",
         VARIANTS[variant],
         className,
       )}
