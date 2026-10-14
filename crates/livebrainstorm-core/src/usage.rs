@@ -2,9 +2,17 @@
 //! dollars, kept per hour, project, kind and model in `<app_data>/usage.json`.
 //! Prices are a pinned table: updating it is a deliberate one-line change.
 
+use std::collections::btree_map::Entry;
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::{Deserialize, Serialize};
 
 use crate::llm::Usage;
+use crate::store::{self, Loaded};
+use crate::Result;
 
 /// What a call was for. The UI breaks a day down by project and kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -75,6 +83,232 @@ pub fn price(model: &str) -> Option<Price> {
     crate::local::catalog::find(model).map(|_| Price { input_per_mtok: 0.0, output_per_mtok: 0.0 })
 }
 
+// ---------- the ledger ----------
+
+/// Buckets older than this are dropped when the ledger loads.
+pub const KEEP_DAYS: u64 = 90;
+
+/// One hour (UTC, `unix_secs / 3600`) of one project's usage, for one kind and
+/// one model. `cost_usd` is the total, estimates included; `estimated_cost_usd`
+/// is the part that came from estimates. Unpriced runs add tokens, not cost.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageBucket {
+    pub hour: u64,
+    pub root: Option<String>,
+    pub kind: UsageKind,
+    pub model: String,
+    pub input: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub output: u64,
+    pub cost_usd: f64,
+    pub runs: u64,
+    pub estimated_runs: u64,
+    pub estimated_cost_usd: f64,
+    pub unpriced_runs: u64,
+}
+
+impl UsageBucket {
+    fn empty(hour: u64, tag: &UsageTag, model: &str) -> Self {
+        Self {
+            hour,
+            root: tag.root.clone(),
+            kind: tag.kind,
+            model: model.to_owned(),
+            input: 0,
+            cache_write: 0,
+            cache_read: 0,
+            output: 0,
+            cost_usd: 0.0,
+            runs: 0,
+            estimated_runs: 0,
+            estimated_cost_usd: 0.0,
+            unpriced_runs: 0,
+        }
+    }
+
+    fn key(&self) -> Key {
+        (self.hour, self.root.clone(), self.kind, self.model.clone())
+    }
+
+    fn add(&mut self, u: &Usage, estimated: bool) {
+        self.input += u.input;
+        self.cache_write += u.cache_write;
+        self.cache_read += u.cache_read;
+        self.output += u.output;
+        self.runs += 1;
+        if estimated {
+            self.estimated_runs += 1;
+        }
+        match u.cost_usd {
+            Some(cost) => {
+                self.cost_usd += cost;
+                if estimated {
+                    self.estimated_cost_usd += cost;
+                }
+            }
+            None => self.unpriced_runs += 1,
+        }
+    }
+
+    /// Adds another bucket's counts (same key on load; any key for totals in tests).
+    fn merge(&mut self, o: &UsageBucket) {
+        self.input += o.input;
+        self.cache_write += o.cache_write;
+        self.cache_read += o.cache_read;
+        self.output += o.output;
+        self.cost_usd += o.cost_usd;
+        self.runs += o.runs;
+        self.estimated_runs += o.estimated_runs;
+        self.estimated_cost_usd += o.estimated_cost_usd;
+        self.unpriced_runs += o.unpriced_runs;
+    }
+}
+
+/// (hour, root, kind, model): one bucket per key.
+type Key = (u64, Option<String>, UsageKind, String);
+
+type OnRecord = Box<dyn Fn() + Send + Sync>;
+
+#[derive(Serialize, Deserialize)]
+struct LedgerFile {
+    version: u32,
+    buckets: Vec<UsageBucket>,
+}
+
+struct Inner {
+    buckets: BTreeMap<Key, UsageBucket>,
+    /// Changed since the last write.
+    dirty: bool,
+    /// False when usage.json exists but couldn't be read: it's never overwritten.
+    persist: bool,
+}
+
+/// Every model call's usage, in memory, saved to `usage.json` by the shell
+/// (`flush_if_dirty` every 5 s, `flush` on exit). `std` locks only, held for
+/// synchronous work: `Meter::drop` records through it from aborted tasks.
+pub struct UsageLedger {
+    path: PathBuf,
+    inner: Mutex<Inner>,
+    /// Serializes writers, so an older snapshot never lands after a newer one.
+    writing: Mutex<()>,
+    on_record: Mutex<Option<OnRecord>>,
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// A panic elsewhere never stops the ledger: it holds plain numbers.
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+impl UsageLedger {
+    pub fn new(path: PathBuf) -> Self {
+        Self::load_at(path, now_secs())
+    }
+
+    /// Never fails: a missing or corrupt file starts an empty ledger (a corrupt
+    /// one is kept as `.bad`), and one that can't be read is left alone and not
+    /// saved over. Buckets older than `KEEP_DAYS` are dropped.
+    fn load_at(path: PathBuf, now: u64) -> Self {
+        let (loaded, persist) = match store::load_json::<LedgerFile>(&path) {
+            Ok(Loaded::Parsed(file)) => (file.buckets, true),
+            Ok(Loaded::Missing) => (Vec::new(), true),
+            Ok(Loaded::Corrupt { kept }) => {
+                let kept = kept.map_or_else(|| "nothing".to_owned(), |p| p.display().to_string());
+                eprintln!("usage.json couldn't be parsed; kept it as {kept} and started a new ledger");
+                (Vec::new(), true)
+            }
+            Err(e) => {
+                eprintln!("Couldn't read {}: {e}. Usage is counted for this session but not saved.", path.display());
+                (Vec::new(), false)
+            }
+        };
+        let oldest = (now / 3600).saturating_sub(KEEP_DAYS * 24);
+        let mut buckets = BTreeMap::new();
+        for b in loaded {
+            if b.hour < oldest {
+                continue;
+            }
+            match buckets.entry(b.key()) {
+                Entry::Occupied(mut have) => UsageBucket::merge(have.get_mut(), &b),
+                Entry::Vacant(slot) => {
+                    slot.insert(b);
+                }
+            }
+        }
+        Self {
+            path,
+            inner: Mutex::new(Inner { buckets, dirty: false, persist }),
+            writing: Mutex::new(()),
+            on_record: Mutex::new(None),
+        }
+    }
+
+    /// The shell's hook, called after every record (outside the ledger's lock).
+    pub fn set_on_record(&self, f: OnRecord) {
+        *lock(&self.on_record) = Some(f);
+    }
+
+    /// Adds one call to its hour's bucket. Synchronous and never awaits, so
+    /// `Meter::drop` can call it from a task that is being aborted.
+    pub fn record(&self, tag: &UsageTag, usage: &Usage, estimated: bool) {
+        self.record_at(now_secs(), tag, usage, estimated)
+    }
+
+    fn record_at(&self, now: u64, tag: &UsageTag, usage: &Usage, estimated: bool) {
+        {
+            let mut inner = lock(&self.inner);
+            let hour = now / 3600;
+            inner
+                .buckets
+                .entry((hour, tag.root.clone(), tag.kind, usage.model.clone()))
+                .or_insert_with(|| UsageBucket::empty(hour, tag, &usage.model))
+                .add(usage, estimated);
+            inner.dirty = true;
+        }
+        if let Some(on_record) = lock(&self.on_record).as_ref() {
+            on_record();
+        }
+    }
+
+    /// Buckets from `since_hour` on, sorted by (hour, root, kind, model).
+    pub fn report(&self, since_hour: u64) -> Vec<UsageBucket> {
+        lock(&self.inner).buckets.values().filter(|b| b.hour >= since_hour).cloned().collect()
+    }
+
+    /// Writes the ledger if anything changed since the last write.
+    pub fn flush_if_dirty(&self) -> Result<()> {
+        self.write(false)
+    }
+
+    /// Writes the ledger now (on exit), which also saves the 90-day prune.
+    pub fn flush(&self) -> Result<()> {
+        self.write(true)
+    }
+
+    fn write(&self, always: bool) -> Result<()> {
+        let _writing = lock(&self.writing);
+        let bytes = {
+            let mut inner = lock(&self.inner);
+            if !inner.persist || !(always || inner.dirty) {
+                return Ok(());
+            }
+            let file = LedgerFile { version: 1, buckets: inner.buckets.values().cloned().collect() };
+            inner.dirty = false;
+            serde_json::to_vec(&file)?
+        };
+        if let Err(e) = store::write_atomic(&self.path, &bytes) {
+            lock(&self.inner).dirty = true; // try again at the next flush
+            return Err(e);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +373,152 @@ mod tests {
         assert!((p(0.10, 0.50).cost(&u) - 0.80).abs() < 1e-12);
         let small = Usage { input: 1200, cache_write: 0, cache_read: 0, output: 310, ..u };
         assert!((p(0.10, 0.50).cost(&small) - 0.000275).abs() < 1e-15);
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// 2025-10-14T00:00:00Z: the spec's example hour, 489000.
+    const T: u64 = 1_760_400_000;
+    const DAY: u64 = 86_400;
+
+    fn tag(root: &str, kind: UsageKind) -> UsageTag {
+        UsageTag { root: Some(root.into()), kind }
+    }
+
+    fn used(model: &str, input: u64, output: u64, cost_usd: Option<f64>) -> Usage {
+        Usage { model: model.into(), input, cache_write: 0, cache_read: 0, output, cost_usd }
+    }
+
+    fn ledger() -> (tempfile::TempDir, UsageLedger) {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = UsageLedger::load_at(dir.path().join("usage.json"), T);
+        (dir, ledger)
+    }
+
+    #[test]
+    fn runs_add_up_in_hourly_buckets_per_project_kind_and_model() {
+        let (_dir, l) = ledger();
+        let notes = tag("/a", UsageKind::Notes);
+        l.record_at(T + 10, &notes, &used("claude-haiku-5-5", 100, 10, Some(0.001)), false);
+        l.record_at(T + 3599, &notes, &used("claude-haiku-5-5", 200, 20, Some(0.002)), false);
+        l.record_at(T + 3600, &notes, &used("claude-haiku-5-5", 1, 1, Some(0.0)), false);
+        l.record_at(T + 20, &tag("/b", UsageKind::Notes), &used("claude-haiku-5-5", 1, 1, Some(0.0)), false);
+        l.record_at(T + 30, &tag("/a", UsageKind::Brief), &used("claude-sonnet-5-5", 1, 1, Some(0.0)), false);
+        l.record_at(T + 40, &notes, &used("haiku", 1, 1, Some(0.0)), false);
+        let all = l.report(0);
+        assert_eq!(all.len(), 5, "{all:?}");
+        let first = all
+            .iter()
+            .find(|b| b.hour == 489_000 && b.root.as_deref() == Some("/a") && b.kind == UsageKind::Notes && b.model == "claude-haiku-5-5")
+            .unwrap();
+        assert_eq!((first.input, first.output, first.runs), (300, 30, 2));
+        assert!((first.cost_usd - 0.003).abs() < 1e-12);
+        let later = l.report(489_001);
+        assert_eq!(later.len(), 1, "report starts at the given hour");
+        assert_eq!(later[0].hour, 489_001);
+    }
+
+    #[test]
+    fn estimates_and_unpriced_runs_are_kept_apart() {
+        let (_dir, l) = ledger();
+        let t = tag("/a", UsageKind::Notes);
+        l.record_at(T, &t, &used("m", 10, 0, Some(0.5)), false);
+        l.record_at(T, &t, &used("m", 10, 0, Some(0.25)), true);
+        l.record_at(T, &t, &used("m", 10, 0, None), false);
+        let b = &l.report(0)[0];
+        assert_eq!((b.runs, b.estimated_runs, b.unpriced_runs), (3, 1, 1));
+        assert_eq!(b.cost_usd, 0.75, "the total includes estimates");
+        assert_eq!(b.estimated_cost_usd, 0.25);
+        assert_eq!(b.input, 30, "unpriced runs still count their tokens");
+    }
+
+    #[test]
+    fn the_file_has_the_spec_shape() {
+        let (dir, l) = ledger();
+        let u = Usage { model: "claude-haiku-5-5".into(), input: 1200, cache_write: 22000, cache_read: 90000, output: 3100, cost_usd: Some(0.0123) };
+        l.record_at(T, &tag("/Users/me/code/shop-api", UsageKind::Notes), &u, false);
+        l.flush().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.path().join("usage.json")).unwrap()).unwrap();
+        assert_eq!(
+            v,
+            serde_json::json!({ "version": 1, "buckets": [{
+                "hour": 489000, "root": "/Users/me/code/shop-api", "kind": "notes", "model": "claude-haiku-5-5",
+                "input": 1200, "cacheWrite": 22000, "cacheRead": 90000, "output": 3100,
+                "costUsd": 0.0123, "runs": 1, "estimatedRuns": 0, "estimatedCostUsd": 0.0, "unpricedRuns": 0 }] })
+        );
+    }
+
+    #[test]
+    fn the_ledger_survives_a_restart_and_forgets_after_90_days() {
+        let (dir, l) = ledger();
+        let t = tag("/a", UsageKind::Notes);
+        l.record_at(T - 91 * DAY, &t, &used("m", 1, 1, Some(0.0)), false);
+        l.record_at(T - 89 * DAY, &t, &used("m", 2, 2, Some(0.0)), false);
+        l.record_at(T, &tag("/b", UsageKind::Brief), &used("m", 3, 3, None), true);
+        l.flush().unwrap();
+        let again = UsageLedger::load_at(dir.path().join("usage.json"), T);
+        let kept: Vec<(u64, u64)> = again.report(0).iter().map(|b| (b.hour, b.input)).collect();
+        assert_eq!(kept, [((T - 89 * DAY) / 3600, 2), (T / 3600, 3)]);
+        assert_eq!(again.report(0)[1].unpriced_runs, 1, "every field survives the round trip");
+    }
+
+    #[test]
+    fn a_corrupt_ledger_is_kept_as_bad_and_starts_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.json");
+        std::fs::write(&path, "{ not json").unwrap();
+        let l = UsageLedger::load_at(path.clone(), T);
+        assert!(l.report(0).is_empty());
+        let bad = dir.path().join("usage.json.bad");
+        assert_eq!(std::fs::read_to_string(&bad).unwrap(), "{ not json");
+        l.record_at(T, &tag("/a", UsageKind::Notes), &used("m", 1, 1, Some(0.0)), false);
+        l.flush().unwrap();
+        assert_eq!(std::fs::read_to_string(&bad).unwrap(), "{ not json", "later writes never touch the .bad copy");
+        assert_eq!(UsageLedger::load_at(path, T).report(0).len(), 1);
+    }
+
+    #[test]
+    fn an_unreadable_ledger_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("usage.json");
+        std::fs::create_dir(&path).unwrap(); // in the way: a read error, not a parse error
+        let l = UsageLedger::load_at(path.clone(), T);
+        l.record_at(T, &tag("/a", UsageKind::Notes), &used("m", 1, 1, Some(0.0)), false);
+        assert_eq!(l.report(0).len(), 1, "still counted for this session");
+        l.flush().unwrap();
+        l.flush_if_dirty().unwrap();
+        assert!(path.is_dir(), "left in place");
+        assert!(!dir.path().join("usage.json.bad").exists());
+    }
+
+    #[test]
+    fn flush_if_dirty_writes_only_after_a_change() {
+        let (dir, l) = ledger();
+        let path = dir.path().join("usage.json");
+        l.flush_if_dirty().unwrap();
+        assert!(!path.exists(), "nothing recorded, nothing written");
+        l.record_at(T, &tag("/a", UsageKind::Notes), &used("m", 1, 1, Some(0.0)), false);
+        l.flush_if_dirty().unwrap();
+        assert!(path.exists());
+        std::fs::remove_file(&path).unwrap();
+        l.flush_if_dirty().unwrap();
+        assert!(!path.exists(), "clean after a write");
+    }
+
+    #[test]
+    fn on_record_runs_after_every_record_and_may_read_the_ledger() {
+        let dir = tempfile::tempdir().unwrap();
+        let l = Arc::new(UsageLedger::load_at(dir.path().join("usage.json"), T));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (seen, weak) = (calls.clone(), Arc::downgrade(&l));
+        l.set_on_record(Box::new(move || {
+            // Called outside the ledger's lock: reading it here must not deadlock.
+            let runs: u64 = weak.upgrade().map_or(0, |l| l.report(0).iter().map(|b| b.runs).sum());
+            seen.fetch_add(runs as usize, Ordering::SeqCst);
+        }));
+        l.record_at(T, &tag("/a", UsageKind::Notes), &used("m", 1, 1, Some(0.0)), false);
+        l.record_at(T, &tag("/a", UsageKind::Notes), &used("m", 1, 1, Some(0.0)), false);
+        assert_eq!(calls.load(Ordering::SeqCst), 1 + 2);
     }
 }
