@@ -4,7 +4,7 @@
 
 use std::collections::btree_map::Entry;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,7 +40,7 @@ impl Price {
     /// Cache writes and reads are priced at the input rate. LiveBrainstorm sets
     /// no `cache_control`, so the API reports none today; if any appear, this errs high.
     pub fn cost(&self, u: &Usage) -> f64 {
-        let input = (u.input + u.cache_write + u.cache_read) as f64;
+        let input = u.input as f64 + u.cache_write as f64 + u.cache_read as f64;
         (input * self.input_per_mtok + u.output as f64 * self.output_per_mtok) / 1_000_000.0
     }
 }
@@ -133,36 +133,38 @@ impl UsageBucket {
     }
 
     fn add(&mut self, u: &Usage, estimated: bool) {
-        self.input += u.input;
-        self.cache_write += u.cache_write;
-        self.cache_read += u.cache_read;
-        self.output += u.output;
-        self.runs += 1;
+        // Counts come from a CLI or API payload: a bogus one saturates, never panics or wraps.
+        self.input = self.input.saturating_add(u.input);
+        self.cache_write = self.cache_write.saturating_add(u.cache_write);
+        self.cache_read = self.cache_read.saturating_add(u.cache_read);
+        self.output = self.output.saturating_add(u.output);
+        self.runs = self.runs.saturating_add(1);
         if estimated {
-            self.estimated_runs += 1;
+            self.estimated_runs = self.estimated_runs.saturating_add(1);
         }
         match u.cost_usd {
-            Some(cost) => {
+            // NaN or infinity would serialize as null and make usage.json unreadable: count it as unpriced.
+            Some(cost) if cost.is_finite() => {
                 self.cost_usd += cost;
                 if estimated {
                     self.estimated_cost_usd += cost;
                 }
             }
-            None => self.unpriced_runs += 1,
+            _ => self.unpriced_runs = self.unpriced_runs.saturating_add(1),
         }
     }
 
     /// Adds another bucket's counts (same key on load; any key for totals in tests).
     fn merge(&mut self, o: &UsageBucket) {
-        self.input += o.input;
-        self.cache_write += o.cache_write;
-        self.cache_read += o.cache_read;
-        self.output += o.output;
+        self.input = self.input.saturating_add(o.input);
+        self.cache_write = self.cache_write.saturating_add(o.cache_write);
+        self.cache_read = self.cache_read.saturating_add(o.cache_read);
+        self.output = self.output.saturating_add(o.output);
         self.cost_usd += o.cost_usd;
-        self.runs += o.runs;
-        self.estimated_runs += o.estimated_runs;
+        self.runs = self.runs.saturating_add(o.runs);
+        self.estimated_runs = self.estimated_runs.saturating_add(o.estimated_runs);
         self.estimated_cost_usd += o.estimated_cost_usd;
-        self.unpriced_runs += o.unpriced_runs;
+        self.unpriced_runs = self.unpriced_runs.saturating_add(o.unpriced_runs);
     }
 }
 
@@ -205,6 +207,25 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// What the ledger starts with, and whether it may write `usage.json`, given
+/// what loading found. A file that exists but couldn't be read, or couldn't be
+/// set aside as `.bad`, is never written over.
+fn start_from(loaded: Result<Loaded<LedgerFile>>, path: &Path) -> (Vec<UsageBucket>, bool) {
+    match loaded {
+        Ok(Loaded::Parsed(file)) => (file.buckets, true),
+        Ok(Loaded::Missing) => (Vec::new(), true),
+        Ok(Loaded::Corrupt { kept }) => {
+            let name = kept.as_ref().map_or_else(|| "nothing".to_owned(), |p| p.display().to_string());
+            eprintln!("usage.json couldn't be parsed; kept it as {name} and started a new ledger");
+            (Vec::new(), kept.is_some())
+        }
+        Err(e) => {
+            eprintln!("Couldn't read {}: {e}. Usage is counted for this session but not saved.", path.display());
+            (Vec::new(), false)
+        }
+    }
+}
+
 impl UsageLedger {
     pub fn new(path: PathBuf) -> Self {
         Self::load_at(path, now_secs())
@@ -214,19 +235,7 @@ impl UsageLedger {
     /// one is kept as `.bad`), and one that can't be read is left alone and not
     /// saved over. Buckets older than `KEEP_DAYS` are dropped.
     fn load_at(path: PathBuf, now: u64) -> Self {
-        let (loaded, persist) = match store::load_json::<LedgerFile>(&path) {
-            Ok(Loaded::Parsed(file)) => (file.buckets, true),
-            Ok(Loaded::Missing) => (Vec::new(), true),
-            Ok(Loaded::Corrupt { kept }) => {
-                let kept = kept.map_or_else(|| "nothing".to_owned(), |p| p.display().to_string());
-                eprintln!("usage.json couldn't be parsed; kept it as {kept} and started a new ledger");
-                (Vec::new(), true)
-            }
-            Err(e) => {
-                eprintln!("Couldn't read {}: {e}. Usage is counted for this session but not saved.", path.display());
-                (Vec::new(), false)
-            }
-        };
+        let (loaded, persist) = start_from(store::load_json::<LedgerFile>(&path), &path);
         let oldest = (now / 3600).saturating_sub(KEEP_DAYS * 24);
         let mut buckets = BTreeMap::new();
         for b in loaded {
@@ -589,6 +598,52 @@ mod tests {
         l.flush_if_dirty().unwrap();
         assert!(path.is_dir(), "left in place");
         assert!(!dir.path().join("usage.json.bad").exists());
+    }
+
+    #[test]
+    fn a_corrupt_file_that_could_not_be_set_aside_is_never_overwritten() {
+        let (_, persist) = start_from(Ok(Loaded::Corrupt { kept: None }), Path::new("usage.json"));
+        assert!(!persist, "the unparseable file we couldn't keep must not be written over");
+        let (_, persist) = start_from(Ok(Loaded::Corrupt { kept: Some(PathBuf::from("usage.json.bad")) }), Path::new("usage.json"));
+        assert!(persist, "once it is safely set aside the ledger may write a fresh file");
+    }
+
+    #[test]
+    fn huge_counts_saturate_instead_of_overflowing() {
+        let (_dir, l) = ledger();
+        let t = tag("/a", UsageKind::Notes);
+        let huge = Usage {
+            model: "claude-haiku-5-5".into(),
+            input: u64::MAX,
+            cache_write: u64::MAX,
+            cache_read: u64::MAX,
+            output: u64::MAX,
+            cost_usd: Some(1.0),
+        };
+        l.record_at(T, &t, &huge, false);
+        l.record_at(T, &t, &huge, false);
+        let b = &l.report(0)[0];
+        assert_eq!((b.input, b.cache_write, b.cache_read, b.output), (u64::MAX, u64::MAX, u64::MAX, u64::MAX));
+        assert_eq!(b.runs, 2);
+        let mut sum = b.clone();
+        sum.merge(b);
+        assert_eq!((sum.input, sum.output, sum.runs), (u64::MAX, u64::MAX, 4));
+        let c = p(0.10, 0.50).cost(&huge);
+        assert!(c.is_finite() && c > 0.0, "the three input counts are summed as f64, not u64: {c}");
+    }
+
+    #[test]
+    fn a_non_finite_cost_counts_as_unpriced() {
+        let (_dir, l) = ledger();
+        let t = tag("/a", UsageKind::Notes);
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            l.record_at(T, &t, &used("m", 5, 0, Some(bad)), true);
+        }
+        l.record_at(T, &t, &used("m", 5, 0, Some(0.5)), false);
+        let b = &l.report(0)[0];
+        assert_eq!((b.runs, b.unpriced_runs, b.estimated_runs, b.input), (4, 3, 3, 20));
+        assert_eq!((b.cost_usd, b.estimated_cost_usd), (0.5, 0.0));
+        l.flush().unwrap(); // and the file still parses: a NaN would have serialized as null
     }
 
     #[test]
