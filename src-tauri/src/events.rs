@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter};
 
 pub const BRIEF_STATUS: &str = "brief-status";
 pub const WORKSPACE_CHANGED: &str = "workspace-changed";
+pub const MENU: &str = "menu";
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -32,6 +33,13 @@ pub struct BriefStatus {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceChanged {
     pub windows: Vec<String>,
+}
+
+/// An app-menu item, sent to the focused window only (`emit_to` its label). `id` is an `ActionId`.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MenuEvent {
+    pub id: String,
 }
 
 pub fn brief_status(app: &AppHandle, root: &str, state: BriefState, message: Option<String>) {

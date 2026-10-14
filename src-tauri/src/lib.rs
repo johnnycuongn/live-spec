@@ -3,6 +3,7 @@
 
 mod commands;
 mod events;
+mod menu;
 mod provider;
 mod secrets;
 mod state;
@@ -26,6 +27,8 @@ pub fn run() {
                 .build(),
         )
         .on_window_event(windows::on_window_event)
+        .menu(menu::build)
+        .on_menu_event(menu::on_event)
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let config_dir = app.path().app_config_dir()?;
