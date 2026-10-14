@@ -1,5 +1,5 @@
 // Shared building blocks, so components don't repeat long class lists.
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
 
 export const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" ");
 
@@ -15,14 +15,16 @@ export const RULE: Record<RuleState, string> = {
   stale: "bg-[repeating-linear-gradient(to_bottom,var(--color-accent)_0_6px,transparent_6px_12px)] opacity-70",
 };
 
-type Variant = "default" | "primary" | "ghost" | "link";
+type Variant = "default" | "primary" | "ghost" | "link" | "mini";
 
 const VARIANTS: Record<Variant, string> = {
-  default: "rounded-md border border-line bg-page px-3 py-1.5 hover:border-faint",
+  default: "rounded-md border border-line bg-page px-3 py-1.5 text-[13px] hover:border-faint",
   // text-page, not white: the dark-mode accent is light enough to need dark text.
-  primary: "rounded-md border border-accent bg-accent px-3 py-1.5 font-medium text-page hover:opacity-90",
-  ghost: "rounded-md px-2.5 py-1.5 text-muted hover:bg-subtle hover:text-ink",
-  link: "text-accent underline underline-offset-2",
+  primary: "rounded-md border border-accent bg-accent px-3 py-1.5 text-[13px] font-medium text-page hover:opacity-90",
+  ghost: "rounded-md px-2.5 py-1.5 text-[13px] text-muted hover:bg-subtle hover:text-ink",
+  link: "text-[13px] text-accent underline underline-offset-2",
+  // Compact, for sidebar rows and group headers.
+  mini: "rounded px-1.5 py-0.5 text-xs text-muted hover:bg-subtle hover:text-ink",
 };
 
 export function Button({ variant = "default", className, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant }) {
@@ -30,7 +32,7 @@ export function Button({ variant = "default", className, ...props }: ButtonHTMLA
     <button
       type="button"
       className={cx(
-        "inline-flex cursor-pointer items-center gap-2 text-[13px] transition-colors disabled:cursor-default disabled:opacity-50",
+        "inline-flex cursor-pointer items-center gap-2 transition-colors disabled:cursor-default disabled:opacity-50",
         VARIANTS[variant],
         className,
       )}
@@ -87,5 +89,85 @@ export function Toggle(props: { checked: boolean; onChange: (on: boolean) => voi
         {props.hint && <span className="text-xs text-muted">{props.hint}</span>}
       </span>
     </label>
+  );
+}
+
+export interface MenuItem {
+  label: string;
+  onSelect: () => void;
+  disabled?: boolean;
+}
+
+/**
+ * A small popup menu at a point: where you right-clicked, or under a ⋯ button.
+ * Choosing an item, Esc, a click outside, or the window losing focus closes
+ * it; arrow keys move between items. Its Esc never reaches the drawers' handler.
+ */
+export function Menu({ at, items, label, onClose }: { at: { x: number; y: number }; items: MenuItem[]; label: string; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+
+  useEffect(() => {
+    const buttons = () => [...(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
+    buttons()[0]?.focus();
+    const outside = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) close.current();
+    };
+    const keys = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        close.current();
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const list = buttons();
+        const i = list.indexOf(document.activeElement as HTMLButtonElement);
+        const down = e.key === "ArrowDown";
+        const next = i === -1 ? (down ? 0 : list.length - 1) : (i + (down ? 1 : -1) + list.length) % list.length;
+        list[next]?.focus();
+      }
+    };
+    const dismiss = () => close.current();
+    window.addEventListener("mousedown", outside);
+    window.addEventListener("keydown", keys, true);
+    window.addEventListener("blur", dismiss);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      window.removeEventListener("mousedown", outside);
+      window.removeEventListener("keydown", keys, true);
+      window.removeEventListener("blur", dismiss);
+      window.removeEventListener("resize", dismiss);
+    };
+  }, []);
+
+  // Keep it on screen near the edges.
+  const style = {
+    left: Math.max(4, Math.min(at.x, window.innerWidth - 224)),
+    top: Math.max(4, Math.min(at.y, window.innerHeight - 12 - items.length * 32)),
+  };
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label={label}
+      style={style}
+      className="fixed z-50 grid min-w-44 gap-0.5 rounded-md border border-line bg-page p-1 shadow-[0_8px_24px_rgb(0_0_0/0.12)]"
+    >
+      {items.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          role="menuitem"
+          disabled={item.disabled}
+          className="cursor-pointer rounded px-2.5 py-1.5 text-left text-[13px] text-ink hover:bg-subtle focus-visible:bg-subtle focus-visible:outline-none disabled:cursor-default disabled:opacity-50"
+          onClick={() => {
+            close.current();
+            item.onSelect();
+          }}
+        >
+          {item.label}
+        </button>
+      ))}
+    </div>
   );
 }
