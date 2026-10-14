@@ -28,7 +28,13 @@ With a key, Jev also skips re-analysis when an edit doesn't change the idea, and
 
 ### Session instructions
 
-Click **Instructions** in the top bar to steer the notes for the project you have open, for example "focus Faults on error handling". Start from a template (Feature design, Bug hunt, Refactor or architecture, Product and UX, Devil's advocate), edit it, or write your own. Each project keeps its current instructions and a default you can reset to; new projects start with none. Instructions change what the notes look for, never their four sections. Add, edit and delete templates in the same drawer; *Restore starter templates* brings back any you deleted.
+Click **Instructions** in the top bar to steer the notes for the shown tab's project (every tab of a project shares them), for example "focus Faults on error handling". Start from a template (Feature design, Bug hunt, Refactor or architecture, Product and UX, Devil's advocate), edit it, or write your own. Each project keeps its current instructions and a default you can reset to; new projects start with none. Instructions change what the notes look for, never their four sections. Add, edit and delete templates in the same drawer; *Restore starter templates* brings back any you deleted.
+
+### Tabs
+
+The sidebar lists your tabs, grouped by project. Each tab has its own draft, notes and analysis, and tabs analyse at the same time: typing in one never stops another, and a tab you switch away from still gets its notes when you pause. A rule beside each tab shows what it's doing (animated while analysing, solid when its notes are current, dashed when the draft has moved on), and a line under its title says the same in words. **Open a project…** opens a new tab on a folder, **+** beside a project adds another tab to it, and **⋯** shows or rebuilds that project's brief, which all its tabs share. Double-click a tab to rename it. Closed tabs wait under *Recently closed*, where you can reopen or delete them at any later launch. Each tab keeps its last five analyses: ‹ and › above the notes show an earlier one and the draft it read. Drafts, notes and history survive restarts, and relaunching doesn't re-analyse a tab whose notes are current.
+
+Shortcuts: ⌘T new tab, ⌘W close tab, ⌘⇧T reopen the last closed tab, ⌘O open a project, ⌃Tab and ⌃⇧Tab next and previous tab, ⌘\\ show or hide the sidebar, ⌘, settings. On Windows and Linux, use Ctrl instead of ⌘.
 
 ### Requirements for the Claude subscription option
 
@@ -60,7 +66,7 @@ React (Vite, Tailwind)               Rust
 1. **Brief (once):** an onboarding doc for the AI. With Claude Code, Claude explores the repo itself using read-only tools (`Read`, `Glob`, `Grep`; edits, shell and web are disallowed). Other providers get a budgeted digest (tree, manifests, docs, heads of central files). Cached per project and marked stale when files change. Optionally (**Settings → Agents → Map the project with parallel agents**), larger repos are split into slices mapped by parallel explorers and one call merges their notes. It's off by default: measured on this repo with Claude Code, 4 explorers plus the merge took about 16% longer than one explorer.
 2. **Retrieval (every pause):** TF-IDF over code identifiers picks the 3 to 5 files your draft is about, weighting what you typed most recently. Runs in microseconds, offline.
 
-**Live analysis:** the UI waits for a pause (configurable), sends the draft, and streams the reply into four sections. A new request aborts the previous one in Rust (which kills the `claude` process too), and stale replies are dropped by request id. If you keep typing, the last notes stay visible and the rule beside them turns dashed.
+**Live analysis:** the UI waits for a pause (configurable), sends the draft, and streams the reply into four sections. A new request aborts that tab's previous one in Rust (which kills its `claude` process too), never another tab's, and stale replies are dropped by request id. If you keep typing, the last notes stay visible and the rule beside them turns dashed.
 
 Optionally, the four sections can be written by up to four agents at once: turn on **Settings → Agents → Write notes with parallel agents** (capped by **Agents at once**). It's off by default because, measured with Claude Code, 4 agents finished *slower* than 1 (each call's start-up dominates) while using 4× the subscription. Each agent is a separate model call.
 
