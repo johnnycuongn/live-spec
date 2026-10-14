@@ -55,6 +55,11 @@ export default function App() {
     if (session) projects.ensure(session.root);
   }, [session]);
 
+  // An "Open a project…" failure belongs to the moment it happened, not to the tab shown next.
+  useEffect(() => {
+    setOpenError(null);
+  }, [ws.activeId]);
+
   useEffect(() => {
     document.title = windowTitle(title);
   }, [title]);
@@ -129,7 +134,11 @@ export default function App() {
   };
 
   // A folder that couldn't be opened or read: shown under the top bar, as a Precondition message.
-  const alert = openError ?? (root !== null ? (pj.summaryErrors[root] ?? null) : null);
+  // Instructions that couldn't load stop the tab's analyses, so they show here too (not their save errors).
+  const alert =
+    openError ??
+    (root !== null ? (pj.summaryErrors[root] ?? null) : null) ??
+    (pj.instructions[root ?? ""] ? null : pj.instructionsError);
   const drawerSummary = briefRoot !== null ? (pj.summaries[briefRoot] ?? null) : null;
   const drawerRun = briefRoot !== null ? (pj.briefs[briefRoot] ?? IDLE_BRIEF) : IDLE_BRIEF;
 

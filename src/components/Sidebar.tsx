@@ -123,9 +123,10 @@ function Group({ group, ws, folded, onFold, onShowBrief, onBuildBrief }: GroupPr
             variant="mini"
             aria-label={`${group.name}: project actions`}
             aria-haspopup="menu"
+            aria-expanded={menu !== null}
             onClick={(e) => {
               const r = e.currentTarget.getBoundingClientRect();
-              setMenu({ x: r.left, y: r.bottom + 4 });
+              setMenu(menu ? null : { x: r.left, y: r.bottom + 4 });
             }}
           >
             ⋯

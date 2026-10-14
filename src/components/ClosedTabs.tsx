@@ -37,7 +37,7 @@ export function ClosedTabs({ closed }: { closed: TabSummary[] }) {
               {g.tabs.map((t) => (
                 <li key={t.id} className="flex items-center gap-1 px-2">
                   {deleting === t.id ? (
-                    <>
+                    <div role="alert" className="flex min-w-0 flex-1 items-center gap-1">
                       <span className="min-w-0 flex-1 truncate text-xs text-ink">Delete for good?</span>
                       <Button
                         variant="mini"
@@ -48,10 +48,17 @@ export function ClosedTabs({ closed }: { closed: TabSummary[] }) {
                       >
                         Yes
                       </Button>
-                      <Button variant="mini" onClick={() => setDeleting(null)}>
+                      <Button
+                        variant="mini"
+                        autoFocus
+                        onClick={() => {
+                          setDeleting(null);
+                          setTimeout(() => document.getElementById(`delete-${t.id}`)?.focus()); // once the row shows Delete again
+                        }}
+                      >
                         No
                       </Button>
-                    </>
+                    </div>
                   ) : (
                     <>
                       <span className="min-w-0 flex-1 truncate text-xs text-muted" title={tabTitle(t)}>
@@ -60,7 +67,7 @@ export function ClosedTabs({ closed }: { closed: TabSummary[] }) {
                       <Button variant="mini" onClick={() => void tabs.reopen(t.id)}>
                         Reopen
                       </Button>
-                      <Button variant="mini" onClick={() => setDeleting(t.id)}>
+                      <Button variant="mini" id={`delete-${t.id}`} onClick={() => setDeleting(t.id)}>
                         Delete
                       </Button>
                     </>

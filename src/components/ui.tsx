@@ -109,15 +109,22 @@ export function Menu({ at, items, label, onClose }: { at: { x: number; y: number
   close.current = onClose;
 
   useEffect(() => {
-    const buttons = () => [...(ref.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
+    const node = ref.current;
+    const buttons = () => [...(node?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? [])];
+    const opener = document.activeElement as HTMLElement | null;
     buttons()[0]?.focus();
     const outside = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) close.current();
+      if (node?.contains(e.target as Node)) return;
+      // The ⋯ button that opened this menu toggles it in its own click handler.
+      if ((e.target as Element).closest?.('[aria-haspopup="menu"][aria-expanded="true"]')) return;
+      close.current();
     };
     const keys = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
         close.current();
+      } else if (e.key === "Tab") {
+        close.current(); // focus moves on from where it is restored below
       } else if (e.key === "ArrowDown" || e.key === "ArrowUp") {
         e.preventDefault();
         const list = buttons();
@@ -137,6 +144,9 @@ export function Menu({ at, items, label, onClose }: { at: { x: number; y: number
       window.removeEventListener("keydown", keys, true);
       window.removeEventListener("blur", dismiss);
       window.removeEventListener("resize", dismiss);
+      // Give focus back to what opened the menu, unless it moved on (Rename's input takes it).
+      const now = document.activeElement;
+      if ((now === null || now === document.body || node?.contains(now)) && opener?.isConnected) opener.focus();
     };
   }, []);
 
