@@ -127,6 +127,63 @@ describe("project contexts", () => {
   });
 });
 
+describe("instructions refetched while typing", () => {
+  it("a keystroke during the refetch is kept, not replaced by the older fetched copy", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockResolvedValueOnce(instructionsView("")).mockResolvedValueOnce({
+      templates: [{ id: "t", name: "T", text: "new template" }],
+      project: { default: "", current: "from the other window", templateId: null },
+    });
+    projects.ensure("/p");
+    await settle();
+    const fetched = deferred<InstructionsView>();
+    api.getInstructions.mockReset();
+    api.getInstructions.mockReturnValue(fetched.promise);
+    const reloading = projects.reloadInstructions("/p");
+    await settle();
+    const typed = { default: "", current: "typed meanwhile", templateId: null };
+    projects.changeInstructions("/p", typed);
+    fetched.resolve({
+      templates: [{ id: "t", name: "T", text: "new template" }],
+      project: { default: "", current: "from the other window", templateId: null },
+    });
+    await reloading;
+    expect(projectsState().instructions["/p"]).toEqual(typed);
+    expect(projectsState().templates).toEqual([{ id: "t", name: "T", text: "new template" }]); // templates still apply
+    await projects.flush();
+    expect(api.saveProjectInstructions).toHaveBeenLastCalledWith("/p", typed);
+  });
+
+  it("an edit made while the pending save flushes is kept too", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure("/p");
+    await settle();
+    const saving = deferred<void>();
+    api.saveProjectInstructions.mockReturnValue(saving.promise);
+    projects.changeInstructions("/p", { default: "", current: "first", templateId: null });
+    const reloading = projects.reloadInstructions("/p"); // flushes "first", which is still saving
+    await settle();
+    const typed = { default: "", current: "first, then more", templateId: null };
+    projects.changeInstructions("/p", typed);
+    saving.resolve();
+    await reloading;
+    expect(projectsState().instructions["/p"]).toEqual(typed);
+  });
+
+  it("without an edit in between, the fetched copy is applied", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockResolvedValueOnce(instructionsView("")).mockResolvedValueOnce(instructionsView("Other window."));
+    projects.ensure("/p");
+    await settle();
+    await projects.reloadInstructions("/p");
+    expect(projectsState().instructions["/p"].current).toBe("Other window.");
+  });
+});
+
 describe("load failures and ordering", () => {
   it("instructions that fail to load push no context and are retried by ensure()", async () => {
     const { projects, projectsState } = await fresh();

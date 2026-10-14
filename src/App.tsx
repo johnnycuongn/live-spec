@@ -32,6 +32,7 @@ export default function App() {
   const [briefRoot, setBriefRoot] = useState<string | null>(null);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [windowError, setWindowError] = useState<string | null>(null);
   const [collapsed, setCollapsed] = useState(() => readCollapsed(currentWindowId(), window.innerWidth));
 
   const session = ws.activeId ? (sessionFor(ws.activeId) ?? null) : null;
@@ -61,6 +62,7 @@ export default function App() {
   // An "Open a project…" failure belongs to the moment it happened, not to the tab shown next.
   useEffect(() => {
     setOpenError(null);
+    setWindowError(null);
   }, [ws.activeId]);
 
   useWindowTitle(windowTitle(title));
@@ -69,7 +71,6 @@ export default function App() {
   useCrossWindowRefresh({
     windowId: currentWindowId(),
     cachedRoots: () => Object.keys(projectsState().instructions),
-    flushInstructions: () => projects.flush(),
     refetchInstructions: (root) => projects.reloadInstructions(root),
     refetchSettings: async () => {
       const s = await api.getSettings();
@@ -124,13 +125,16 @@ export default function App() {
     projects.buildBrief(r);
   };
 
-  const [windowError, setWindowError] = useState<string | null>(null);
   // ⌘⇧W. Saves the pending draft and instructions first; the shell then applies the close
   // rules (on_window_event): with other windows open, this window's tabs go to Recently closed.
   const closeWindow = () => {
     setWindowError(null);
     Promise.all([tabs.flush(), projects.flush()])
-      .then(() => getCurrentWindow().close())
+      .then((saved) => {
+        // The local session is dropped with the window: close only if everything reached disk.
+        if (!saved.every(Boolean)) throw "Your latest edits couldn't be saved.";
+        return getCurrentWindow().close();
+      })
       .catch((e: unknown) => setWindowError(`Couldn't close the window: ${errorMessage(e)}`));
   };
 

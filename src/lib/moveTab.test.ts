@@ -41,6 +41,16 @@ describe("moveTabTo", () => {
   });
 });
 
+describe("moveTabTo with a flush that reports failure", () => {
+  it("does not move or forget the tab when the draft could not be saved", async () => {
+    const move = vi.fn(async () => "w-2");
+    const forget = vi.fn();
+    await expect(moveTabTo("t-1", "w-2", { flush: async () => false, move, forget })).rejects.toMatch(/draft/);
+    expect(move).not.toHaveBeenCalled();
+    expect(forget).not.toHaveBeenCalled();
+  });
+});
+
 describe("moveTargets", () => {
   const tab = (id: string, title: string | null, firstLine: string): TabSummary => ({
     id,

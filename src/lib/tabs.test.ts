@@ -79,6 +79,17 @@ describe("tabs store", () => {
     expect(workspaceState().activeId).toBe("a2");
   });
 
+  it("a draft that can't be saved keeps the tab open and says so", async () => {
+    const { tabs, sessionFor, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
+    sessionFor("a1")!.setDraft("typed in a1");
+    api.saveDraft.mockRejectedValue("disk full");
+    await tabs.close("a1");
+    expect(api.closeTab).not.toHaveBeenCalled();
+    expect(sessionFor("a1")).toBeDefined();
+    expect(workspaceState().activeId).toBe("a1");
+    expect(workspaceState().error).toMatch(/draft/i);
+  });
+
   it("closing the last tab leaves the window empty", async () => {
     const { tabs, workspaceState } = await loadStore(view([summary("a1", "/a")], full("a1", "/a")));
     api.listWorkspace.mockResolvedValue(view([], null));
@@ -152,6 +163,17 @@ describe("tabs store", () => {
     expect(sessionFor("a1")).toBeDefined();
     expect(workspaceState().activeId).toBe("a1");
     expect(workspaceState().error).toBe("This window was closed.");
+  });
+
+  it("a draft that can't be saved keeps the tab here and says so", async () => {
+    const { tabs, sessionFor, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
+    sessionFor("a1")!.setDraft("typed in a1");
+    api.saveDraft.mockRejectedValue("disk full");
+    await tabs.move("a1", "w-2");
+    expect(api.moveTab).not.toHaveBeenCalled();
+    expect(sessionFor("a1")).toBeDefined();
+    expect(workspaceState().activeId).toBe("a1");
+    expect(workspaceState().error).toMatch(/draft/i);
   });
 
   it("a tab moved here from another window is shown", async () => {

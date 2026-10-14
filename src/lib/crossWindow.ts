@@ -8,8 +8,6 @@ export interface CrossWindowDeps {
   windowId: string;
   /** The roots whose instructions this window has loaded ("" is the no-project instructions). */
   cachedRoots: () => Iterable<string>;
-  /** Saves this window's pending instructions edit now. */
-  flushInstructions: () => Promise<void>;
   /** Fetches one root's `InstructionsView` (templates included) into this window's cache. */
   refetchInstructions: (root: string) => Promise<void>;
   refetchSettings: () => Promise<void>;
@@ -26,12 +24,11 @@ export function rootsToRefetch(e: InstructionsChangedEvent, self: string, cached
   return e.root === "" ? roots : roots.filter((root) => root === e.root);
 }
 
-/** Saves this window's own pending edit before refetching, so that edit can't land half a
- *  second later on top of the refetched copy, and the last save really is the last. */
+/** Refetches what another window saved. The refetch itself saves this window's pending edit
+ *  first (`projects.reloadInstructions`), so the last save really is the last. */
 export async function refreshInstructions(e: InstructionsChangedEvent, d: CrossWindowDeps): Promise<void> {
   const roots = rootsToRefetch(e, d.windowId, d.cachedRoots());
   if (roots.length === 0) return;
-  await d.flushInstructions();
   await Promise.all(roots.map((root) => d.refetchInstructions(root)));
 }
 

@@ -173,10 +173,19 @@ async function newTab(root: string | null): Promise<void> {
   }
 }
 
+/** Saves the pending draft before a tab leaves this window's session (closed or moved), and
+ *  says so when it can't: the stored copy would be older than the text on screen. */
+async function draftSaved(action: string): Promise<boolean> {
+  if (await saver.flush()) return true;
+  set({ error: `Couldn't save your draft, so the tab was not ${action}.` });
+  return false;
+}
+
 async function close(tabId: string): Promise<void> {
   const wasShown = tabId === state.activeId;
   const next = wasShown ? afterClose(order(), tabId) : null;
   set({ error: null });
+  if (!(await draftSaved("closed"))) return; // before switching: a failed save leaves everything as it is
   // Show the next tab first. Closing the shown tab makes the backend activate its neighbour in the
   // *stored* order, and the workspace-changed refresh would show that tab for a moment.
   if (next) await switchTo(next);
@@ -201,6 +210,7 @@ async function move(tabId: string, to: string | null): Promise<void> {
   const wasShown = tabId === state.activeId;
   const next = wasShown ? afterClose(order(), tabId) : null;
   set({ error: null });
+  if (!(await draftSaved("moved"))) return;
   // As closing does: show the next tab first, so the backend's stored-order pick never flashes.
   if (next) await switchTo(next);
   try {

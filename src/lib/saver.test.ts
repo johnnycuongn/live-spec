@@ -47,4 +47,43 @@ describe("createSaver", () => {
     await s.flush();
     expect(onError).toHaveBeenCalledWith(new Error("disk full"));
   });
+
+  it("flush resolves true when everything saved, false when a save failed", async () => {
+    const ok = createSaver(() => Promise.resolve(), 500, () => {});
+    ok.schedule("/a", "x");
+    await expect(ok.flush()).resolves.toBe(true);
+    await expect(ok.flush()).resolves.toBe(true); // nothing pending
+    const bad = createSaver(() => Promise.reject(new Error("disk full")), 500, () => {});
+    bad.schedule("/a", "x");
+    await expect(bad.flush()).resolves.toBe(false);
+  });
+
+  it("flush waits for a save the timer already started", async () => {
+    let finish!: () => void;
+    const save = vi.fn(() => new Promise<void>((resolve) => (finish = resolve)));
+    const s = createSaver(save, 500, () => {});
+    s.schedule("/a", "x");
+    vi.advanceTimersByTime(500); // the timer fires: the save is in flight, nothing pending
+    expect(save).toHaveBeenCalledTimes(1);
+    let done = false;
+    const flushed = s.flush().then((ok) => ((done = true), ok));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(done).toBe(false);
+    finish();
+    await expect(flushed).resolves.toBe(true);
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("flush reports a failure of the save already in flight", async () => {
+    let fail!: (e: unknown) => void;
+    const onError = vi.fn();
+    const s = createSaver(() => new Promise<void>((_, reject) => (fail = reject)), 500, onError);
+    s.schedule("/a", "x");
+    vi.advanceTimersByTime(500);
+    const flushed = s.flush();
+    fail(new Error("disk full"));
+    await expect(flushed).resolves.toBe(false);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
 });

@@ -50,6 +50,8 @@ const nextSeq = (root: string) => {
   summarySeq.set(root, n);
   return n;
 };
+/** Counts the edits typed into each root's instructions, so a refetch can tell the user typed meanwhile. */
+const edits = new Map<string, number>();
 let started = false;
 
 function set(patch: Partial<ProjectsState>) {
@@ -105,10 +107,13 @@ async function loadSummary(root: string): Promise<void> {
 }
 
 async function loadInstructions(root: string | null): Promise<void> {
+  const edited = edits.get(key(root)) ?? 0;
   await saver.flush(); // a pending edit must not lose to the read below
   try {
     const view = await api.getInstructions(key(root));
-    set({ templates: view.templates, instructions: { ...state.instructions, [key(root)]: view.project } });
+    // Typed since this load began: the fetched copy is older than the text on screen. Keep the text.
+    if ((edits.get(key(root)) ?? 0) !== edited) set({ templates: view.templates });
+    else set({ templates: view.templates, instructions: { ...state.instructions, [key(root)]: view.project } });
   } catch (e) {
     // Not loaded, not empty: empty instructions would re-run a tab's saved notes without the
     // ones they were made with, and typing could overwrite the saved file. ensure() retries.
@@ -140,6 +145,7 @@ async function openFolder(path: string): Promise<string> {
 }
 
 function changeInstructions(root: string | null, next: ProjectInstructions): void {
+  edits.set(key(root), (edits.get(key(root)) ?? 0) + 1);
   set({ instructions: { ...state.instructions, [key(root)]: next }, instructionsError: null });
   saver.schedule(key(root), next);
   pushContext(root); // re-reads the shown tab's draft, as editing instructions does today

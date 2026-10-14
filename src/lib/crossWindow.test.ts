@@ -23,15 +23,14 @@ describe("refreshInstructions", () => {
   const deps = (log: string[], cached: string[]): CrossWindowDeps => ({
     windowId: "w-1",
     cachedRoots: () => cached,
-    flushInstructions: async () => void log.push("flush"),
     refetchInstructions: async (root) => void log.push(`refetch ${root}`),
     refetchSettings: async () => void log.push("settings"),
   });
 
-  it("saves this window's pending edit before refetching", async () => {
+  it("refetches the saved root (the refetch itself saves this window's pending edit first)", async () => {
     const log: string[] = [];
     await refreshInstructions({ root: "/a", source: "w-2" }, deps(log, ["/a", "/b"]));
-    expect(log).toEqual(["flush", "refetch /a"]);
+    expect(log).toEqual(["refetch /a"]);
   });
 
   it("does nothing for its own save, or a root it doesn't show", async () => {
