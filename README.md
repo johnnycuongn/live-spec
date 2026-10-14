@@ -55,7 +55,7 @@ React (Vite, Tailwind)               Rust
 
 **Understanding the project happens in two layers**, the way a new teammate ramps up:
 
-1. **Brief (once):** an onboarding doc for the AI. With Claude Code, Claude explores the repo itself using read-only tools (`Read`, `Glob`, `Grep`; edits, shell and web are disallowed). Other providers get a budgeted digest (tree, manifests, docs, heads of central files). Cached per project and marked stale when files change. With several agents allowed (`agents.maxAgents`, `agents.parallelBrief`), larger repos are split into slices mapped by parallel explorers, and one call merges their notes.
+1. **Brief (once):** an onboarding doc for the AI. With Claude Code, Claude explores the repo itself using read-only tools (`Read`, `Glob`, `Grep`; edits, shell and web are disallowed). Other providers get a budgeted digest (tree, manifests, docs, heads of central files). Cached per project and marked stale when files change. Optionally (`agents.parallelBrief: true`, capped by `agents.maxAgents`), larger repos are split into slices mapped by parallel explorers and one call merges their notes. It's off by default: measured on this repo with Claude Code, 4 explorers plus the merge took about 16% longer than one explorer.
 2. **Retrieval (every pause):** TF-IDF over code identifiers picks the 3 to 5 files your draft is about, weighting what you typed most recently. Runs in microseconds, offline.
 
 **Live analysis:** the UI waits for a pause (configurable), sends the draft, and streams the reply into four sections. A new request aborts the previous one in Rust (which kills the `claude` process too), and stale replies are dropped by request id. If you keep typing, the last notes stay visible and the rule beside them turns dashed.

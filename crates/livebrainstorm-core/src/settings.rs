@@ -88,7 +88,7 @@ impl Default for JevSettings {
 pub struct AgentSettings {
     /// The cap on agents running at once; clamped to 1..=8.
     pub max_agents: u8,
-    /// Map the project with parallel explorers (phase 4).
+    /// Map the project with parallel explorers (opt-in; measured slower).
     pub parallel_brief: bool,
     /// Write the four note sections with parallel agents.
     pub parallel_notes: bool,
@@ -96,9 +96,9 @@ pub struct AgentSettings {
 
 impl Default for AgentSettings {
     fn default() -> Self {
-        // Parallel notes are opt-in: with Claude Code, 4 lanes measured
-        // slower than 1 (per-call overhead dominates; see the spec).
-        Self { max_agents: 4, parallel_brief: true, parallel_notes: false }
+        // Parallel notes and briefs are opt-in: neither measured faster
+        // than one agent with Claude Code (see the spec's measurements).
+        Self { max_agents: 4, parallel_brief: false, parallel_notes: false }
     }
 }
 
@@ -239,14 +239,16 @@ mod tests {
         let path = dir.path().join("settings.json");
         std::fs::write(&path, r#"{"provider":{"kind":"claudeCli","binaryPath":null,"fastModel":"haiku","deepModel":"sonnet"},"debounceMs":900}"#).unwrap();
         let s = Settings::load(&path);
-        assert_eq!(s.agents, AgentSettings { max_agents: 4, parallel_brief: true, parallel_notes: false });
+        assert_eq!(s.agents, AgentSettings { max_agents: 4, parallel_brief: false, parallel_notes: false });
         let json = serde_json::to_value(&s).unwrap();
-        assert_eq!(json["agents"], serde_json::json!({"maxAgents": 4, "parallelBrief": true, "parallelNotes": false}));
+        assert_eq!(json["agents"], serde_json::json!({"maxAgents": 4, "parallelBrief": false, "parallelNotes": false}));
     }
 
     #[test]
     fn brief_agents_follow_the_settings() {
         let mut s = Settings::default();
+        assert_eq!(s.effective_brief_agents(), 1, "parallel briefs are opt-in");
+        s.agents.parallel_brief = true;
         assert_eq!(s.effective_brief_agents(), 4);
         s.agents.max_agents = 6;
         assert_eq!(s.effective_brief_agents(), 6, "explorers are not capped at four");
@@ -254,7 +256,7 @@ mod tests {
         assert_eq!(s.effective_brief_agents(), 1);
         s.agents = AgentSettings { parallel_brief: false, ..AgentSettings::default() };
         assert_eq!(s.effective_brief_agents(), 1);
-        s.agents = AgentSettings::default();
+        s.agents = AgentSettings { parallel_brief: true, ..AgentSettings::default() };
         s.provider = ProviderSettings::Local { model_id: "qwen3-4b-instruct".into() };
         assert_eq!(s.effective_brief_agents(), 1);
     }

@@ -347,3 +347,17 @@ Per lane, second run: one section (≈ 370–680 chars) took 6.6–14 s; the sin
 - Why: each call's time is dominated by fixed per-call cost (spawning `claude -p`, reading the ≈ 30k-char project context), not by output length. Splitting the output buys almost nothing, and 4 concurrent calls finish when the slowest of 4 variable latencies does.
 - Not measured: the Anthropic API provider (no process spawn) and local models (always 1 lane).
 - Implication for phase 4: the brief's explorers do far more work per agent (tool turns over the repo), so parallelism there is more likely to pay off. Measure before assuming.
+
+## Measurements (phase 4, 2026-10-14)
+
+`cargo test -p livebrainstorm-core --test brief_live -- --ignored --nocapture`, Claude Code `sonnet` via the subscription, this repo (81 indexed files). Two runs:
+
+| Explorers | Total (run 1; run 2) | Words | Missing sections | Notes |
+|---|---|---|---|---|
+| 1 | 47,665 ms; 44,132 ms | 1,473; 1,349 | none | today's single explorer |
+| 4 | 55,356 ms; 50,962 ms | 1,562; 1,257 | none | explorers 21–26 s each in parallel (docs/, crates/, src/, src-tauri/), then merge 29.3 s; 25.6 s; unmapped none |
+
+- Combined: 4 explorers 106.3 s vs 1 explorer 91.8 s, so **4 is ≈16% slower**. Run 1 alone was within the 20% band, so the pair was measured twice as the rule requires.
+- Why: parallel exploration halves the mapping time (≈25 s vs ≈45 s), but the extra merge call (≈25–29 s) costs more than that saves. The brief quality was comparable (all eight sections, similar length).
+- One explorer spent its slice on `docs/` (plans and specs), not code. A future slicer could deprioritise documentation folders.
+- **Default: turned off** (`agents.parallelBrief: false`), by the plan's rule: 4 explorers were not ≥ 20% faster. It stays available as an opt-in. Together with phase 3, neither parallel notes nor parallel briefs beat a single agent with Claude Code on this repo. Per-call overhead (spawning `claude -p`, re-reading context, an extra merge round) dominates.
