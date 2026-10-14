@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errorMessage, type Settings } from "./lib/ipc";
 import { providerLabel } from "./lib/providerOptions";
 import { EMPTY_INSTRUCTIONS, instructionsLabel } from "./lib/instructions";
@@ -109,8 +110,22 @@ export default function App() {
     projects.buildBrief(r);
   };
 
-  // Phase 3 adds new-window and close-window, and routes its menu events here.
+  const [windowError, setWindowError] = useState<string | null>(null);
+  // ⌘⇧W. Saves the pending draft and instructions first; the shell then applies the close
+  // rules (on_window_event): with other windows open, this window's tabs go to Recently closed.
+  const closeWindow = () => {
+    setWindowError(null);
+    Promise.all([tabs.flush(), projects.flush()])
+      .then(() => getCurrentWindow().close())
+      .catch((e: unknown) => setWindowError(`Couldn't close the window: ${errorMessage(e)}`));
+  };
+
   useActions({
+    "new-window": () => {
+      setWindowError(null);
+      api.openWindow().catch((e: unknown) => setWindowError(errorMessage(e)));
+    },
+    "close-window": closeWindow,
     "new-tab": () => void tabs.newTab(root),
     "open-project": () => void openFolder(),
     "reopen-tab": () => {
@@ -135,6 +150,7 @@ export default function App() {
   // A folder that couldn't be opened or read: shown under the top bar, as a Precondition message.
   // Instructions that couldn't load stop the tab's analyses, so they show here too (not their save errors).
   const alert =
+    windowError ??
     openError ??
     (root !== null ? (pj.summaryErrors[root] ?? null) : null) ??
     (pj.instructions[root ?? ""] ? null : pj.instructionsError);

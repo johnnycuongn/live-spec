@@ -1,6 +1,7 @@
-// Keyboard actions for tabs, handled in the webview for now. Phase 3's app
-// menu emits the same ids as `menu` events and takes over the keys it owns.
+// Actions for tabs and windows. The native app menu emits the same ids as `menu`
+// events and owns their shortcuts; keydown handles only the keys it doesn't own.
 import { useEffect, useRef } from "react";
+import { onMenu } from "./events";
 
 export type ActionId =
   | "new-tab"
@@ -64,20 +65,76 @@ export function dispatchKey(e: KeyDown, handlers: Partial<Record<ActionId, () =>
   return true;
 }
 
+// ---- Phase 3: the app menu ----
+
 /**
- * Runs the handler for each recognised key press. Actions without a handler
- * are left to the webview, and nothing fires while a modal dialog (Settings)
- * is open, so ⌘W never closes a tab behind it.
+ * Whether the native app menu (src-tauri/src/menu.rs) owns an action's shortcut. The menu
+ * carries every action; owning the shortcut means keydown never runs it, because in
+ * WKWebView a key the page doesn't preventDefault goes on to the menu, and binding both
+ * would run the action twice. A Record, so a new ActionId fails the typecheck until it's
+ * decided here.
+ */
+const MENU_SHORTCUT: Record<ActionId, boolean> = {
+  "new-tab": true,
+  "new-window": true,
+  "open-project": true,
+  "reopen-tab": true,
+  "close-tab": true,
+  "close-window": true,
+  "next-tab": true,
+  "prev-tab": true,
+  "toggle-sidebar": true,
+  settings: true,
+};
+
+export const ownsShortcut = (action: ActionId): boolean => MENU_SHORTCUT[action];
+
+/** The action a `menu { id }` event names, or null for any other id. */
+export function menuAction(id: string): ActionId | null {
+  return Object.hasOwn(MENU_SHORTCUT, id) ? (id as ActionId) : null;
+}
+
+/** The action a keydown still runs itself: never one whose shortcut the menu owns. */
+export function keydownAction(e: KeyboardEvent): ActionId | null {
+  const action = keyToAction(e);
+  return action !== null && !ownsShortcut(action) ? action : null;
+}
+
+/**
+ * Runs the handler for one menu item, once. Nothing runs while a modal dialog is open
+ * (Settings): the native menu doesn't know about it, and ⌘W shouldn't close a tab behind it.
+ */
+export function dispatchMenu(
+  id: string,
+  handlers: Partial<Record<ActionId, () => void>>,
+  modalOpen: boolean,
+): ActionId | null {
+  const action = menuAction(id);
+  if (action === null || modalOpen) return null;
+  handlers[action]?.();
+  return action;
+}
+
+/**
+ * Binds the actions: this window's app-menu items, plus any keydown the menu doesn't own
+ * (through `dispatchKey`, so auto-repeat is still swallowed). Neither runs while a modal
+ * dialog (Settings) is open, so ⌘W never closes a tab behind it.
  */
 export function useActions(handlers: Partial<Record<ActionId, () => void>>): void {
   const current = useRef(handlers);
   current.current = handlers;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (document.querySelector("dialog[open]")) return;
+      if (keydownAction(e) === null || document.querySelector("dialog[open]")) return;
       dispatchKey(e, current.current, IS_MAC);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const menu = onMenu(({ id }) => {
+      dispatchMenu(id, current.current, document.querySelector("dialog[open]") !== null);
+    });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      void menu.then((unlisten) => unlisten());
+    };
   }, []);
 }
