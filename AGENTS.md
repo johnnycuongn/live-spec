@@ -48,13 +48,13 @@ cargo run -p livebrainstorm-core --example probe -- <project-dir> "<draft text>"
 - **Shared primitives** live in `src/components/ui.tsx` (`Button`, `Field`, `inputClass`, `Eyebrow`, and the `cx` class joiner). Use them instead of repeating class lists.
 - **Layout:** both panes are flex columns with `min-h-0` and their own `overflow-y-auto`. The draft `<textarea>` fills its pane, and percentage padding centres a 40rem text column, so the textarea and the word-count footer line up.
 - **Rule animation:** the accent rule between the panes (`Rule` in `NotesPane.tsx`) shows state: solid when notes are current, animated while thinking, dashed when the draft has moved on.
-- **Settings** is a native `<dialog>` opened with `showModal()`, which gives focus trapping, Esc and `::backdrop` for free. Esc for the brief drawer is handled in `App.tsx`.
+- **Settings** is a native `<dialog>` opened with `showModal()`, which gives focus trapping, Esc and `::backdrop` for free. Esc for the brief and instructions drawers is handled in `App.tsx`; only one drawer is open at a time.
 
 ### Live analysis flow
 
-1. `src/lib/useLiveAnalysis.ts` waits for a typing pause (`debounceMs`, default 1200). It needs at least 24 characters after whitespace normalization and skips the call if the normalized draft hasn't changed. When the project or brief changes (`contextKey`), it re-sends the same draft.
+1. `src/lib/useLiveAnalysis.ts` waits for a typing pause (`debounceMs`, default 1200). It needs at least 24 characters after whitespace normalization and skips the call if the normalized draft hasn't changed. When the project or brief changes (`contextKey`), it re-sends the same draft. The session instructions are part of `contextKey` (`analysisContextKey` in `src/lib/instructions.ts`), so editing them re-reads the same draft without the gate, and every `analyze` call carries the current text.
 2. `analyze` (`src-tauri/src/commands.rs`) returns immediately after spawning a task into the `AppState.analysis` slot. `replace_task` aborts the previous task, and dropping that future kills the `claude` child process (`kill_on_drop`).
-3. The task resolves a provider at `Tier::Fast` (`src-tauri/src/provider.rs`), then runs `analysis::pre_phase`. The Jev gate ("did the idea change since `previousDraft`?") and the Jev rerank (scores the 20-snippet keyword shortlist and keeps the best 3 or 5) run concurrently under `PRE_BUDGET` (1.5 s). A confident "unchanged" emits `skipped` and stops. Otherwise it emits `started`, then at most one pre-phase `notice`, builds the prompt with `prompt::analysis_request` and streams. Without Jev, or for the Local provider, or when Jev is slow or failing, this is plain keyword retrieval (`project::retrieve`).
+3. The task resolves a provider at `Tier::Fast` (`src-tauri/src/provider.rs`), then runs `analysis::pre_phase`. The Jev gate ("did the idea change since `previousDraft`?") and the Jev rerank (scores the 20-snippet keyword shortlist and keeps the best 3 or 5) run concurrently under `PRE_BUDGET` (1.5 s). A confident "unchanged" emits `skipped` and stops. Otherwise it emits `started`, then at most one pre-phase `notice`, builds the prompt with `prompt::analysis_request` (which puts the session instructions in every lane's system prompt, before the rules, clipped to `min(MAX_INSTRUCTION_CHARS, budget / 10)` characters) and streams. Without Jev, or for the Local provider, or when Jev is slow or failing, this is plain keyword retrieval (`project::retrieve`).
 4. After `started`, the sections are written by `Settings::effective_note_agents()` lanes at once (1 unless `agents.parallelNotes` is on, which is off by default: 4 lanes measured slower than 1 with the Claude CLI) (`prompt::section_groups`: 1 → all four, 2 → Intent+Faults | Directions+Questions, 3 → Intent+Faults | Directions | Questions, 4 → one each; always 1 for the Local provider). Lanes run through `agents::run_limited`, so dropping the task cancels every `claude` child. Every chunk is `text { text, lane }`; `done { text, partial }` carries the lanes joined in lane order (`analysis::merge_lanes` keeps only each lane's own sections), and any missing sections become one `notice` with `partial: true` (the UI offers "Try again", and partial notes never become the gate's comparison point). A failed fact-check is `checksStopped`, distinct from other notices. The fact-check starts when the Faults lane finishes (a oneshot from that lane), concurrently with the other lanes; `done` never waits for it. Events: `text`, `activity`, `started`, `skipped`, `notice`, `checking`, `check`, `done`, `error`, `progress`.
 5. `src/lib/sections.ts` splits the streamed Markdown into the four sections, and `MiniMarkdown` renders them.
 
@@ -99,6 +99,7 @@ Brief building (`build_brief`, `Tier::Deep`) and downloads (`install_runtime`, `
 
 - Settings: `<app_config>/settings.json`, written atomically (tmp file + rename). A missing or corrupt file falls back to defaults instead of blocking startup.
 - API key: OS keychain (service `app.livebrainstorm.desktop`, account `anthropic-api-key`), shared by the Anthropic API provider and Claude Code's API-key sign-in. Never written to settings.json, never sent to the webview. In Rust it travels as `llm::Secret`, whose `Debug` prints `Secret(***)`.
+- Session instructions and templates: `<app_config>/instructions.json` (`instructions::InstructionStore`), written atomically under a mutex. A missing file starts with the five starter templates. An unreadable one is renamed to `instructions.json.bad` rather than overwritten, because it holds the user's writing. Projects are keyed by root path, and `""` is the session with no project open. The frontend saves edits 500 ms after typing stops (`src/lib/saver.ts`) and flushes before switching projects.
 - Local runtime and models: `<app_data>/local/{runtime,models,downloads}`, server log at `local/llama-server.log`. Downloads resume through `.part` files and HTTP Range requests. Runtime installs extract into a staging dir, then swap it in.
 - Frontend: drafts are stored per project in `localStorage` (`livebrainstorm.draft.<root>`), plus `livebrainstorm.lastProject`. Download progress lives in a module-level store (`src/lib/downloads.ts`, `useSyncExternalStore`) so it survives closing Settings.
 
@@ -112,8 +113,9 @@ Brief building (`build_brief`, `Tier::Deep`) and downloads (`install_runtime`, `
 
 - **Section parsing:** `prompt::section_body` (Rust) mirrors `parseSections` in `src/lib/sections.ts`; change both together.
 - **Check events:** `CheckResult` / `Verdict` in `jev/check.rs` ↔ `CheckResult` / `Verdict` in `src/lib/ipc.ts`.
+- **Session instructions:** `Template` / `ProjectInstructions` / `InstructionsView` in `instructions.rs` ↔ `src/lib/ipc.ts`; `MAX_INSTRUCTION_CHARS` in `prompt.rs` ↔ `src/lib/instructions.ts`.
 
-- **Lanes:** `prompt::section_groups` (Rust) decides which sections each `lane` carries; `src/lib/lanes.ts` joins lane buffers in lane order. `analysis_system(&SECTIONS)` must stay byte-identical to the single-agent prompt (`all_four_sections_is_todays_prompt`).
+- **Lanes:** `prompt::section_groups` (Rust) decides which sections each `lane` carries; `src/lib/lanes.ts` joins lane buffers in lane order. `analysis_system(&SECTIONS, "")` (no instructions) must stay byte-identical to the single-agent prompt (`all_four_sections_is_todays_prompt`).
 
 ## Deliberate decisions to preserve
 
@@ -131,3 +133,4 @@ Brief building (`build_brief`, `Tier::Deep`) and downloads (`install_runtime`, `
 - Ollama / LM Studio: both speak the OpenAI API, so build `OpenAiCompat` with their base URL behind a new provider setting.
 - Fuzzier retrieval ("payments" finding `billing/`): replace the body of `project::retrieve` with embeddings and keep its signature.
 - GPU builds on Windows/Linux: change the asset suffix in `local/runtime.rs::asset_name`.
+- Starter templates: `STARTERS` in `crates/livebrainstorm-core/src/instructions.rs`. Existing users get new ones through *Restore starter templates*.

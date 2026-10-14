@@ -11,6 +11,7 @@ import { DraftPane } from "./components/DraftPane";
 import { NotesPane } from "./components/NotesPane";
 import { BriefDrawer } from "./components/BriefDrawer";
 import { InstructionsDrawer } from "./components/InstructionsDrawer";
+import { TemplateList } from "./components/TemplateList";
 import { SettingsDialog } from "./components/SettingsDialog";
 
 const LAST_PROJECT = "livebrainstorm.lastProject";
@@ -133,6 +134,25 @@ export default function App() {
     saver.schedule(project?.root ?? "", next);
   };
 
+  const changeTemplates = async (next: Template[]) => {
+    setTemplates(next);
+    try {
+      await api.saveTemplates(next);
+      setInstructionsError(null);
+    } catch (e) {
+      setInstructionsError(`Couldn't save instructions: ${errorMessage(e)}`);
+    }
+  };
+
+  const restoreStarters = async () => {
+    try {
+      setTemplates(await api.restoreStarterTemplates());
+      setInstructionsError(null);
+    } catch (e) {
+      setInstructionsError(`Couldn't save instructions: ${errorMessage(e)}`);
+    }
+  };
+
   const buildBrief = () => {
     setShowInstructions(false);
     setShowBrief(true);
@@ -215,7 +235,9 @@ export default function App() {
             error={instructionsError}
             onChange={changeInstructions}
             onClose={() => setShowInstructions(false)}
-          />
+          >
+            <TemplateList templates={templates} current={instructions.current} onSave={changeTemplates} onRestore={restoreStarters} />
+          </InstructionsDrawer>
         )}
       </main>
 

@@ -26,6 +26,10 @@ With a [TypeSafe](https://typesafe.ai) API key, LiveBrainstorm checks every Faul
 
 With a key, Jev also skips re-analysis when an edit doesn't change the idea, and picks which code snippets the notes model sees. These calls send your draft, each Fault, and short code excerpts to TypeSafe. They never run with the Local model option, which promises nothing leaves your computer.
 
+### Session instructions
+
+Click **Instructions** in the top bar to steer the notes for the project you have open, for example "focus Faults on error handling". Start from a template (Feature design, Bug hunt, Refactor or architecture, Product and UX, Devil's advocate), edit it, or write your own. Each project keeps its current instructions and a default you can reset to; new projects start with none. Instructions change what the notes look for, never their four sections. Add, edit and delete templates in the same drawer; *Restore starter templates* brings back any you deleted.
+
 ### Requirements for the Claude subscription option
 
 LiveBrainstorm runs Claude Code in restricted mode (`--restricted`, so a project you open can't run its own hooks or servers). That mode ignores every Claude Code settings file, including your own `~/.claude/settings.json`, so authentication must come from your normal Claude Code login, from environment variables, or from **Sign in with: My Anthropic API key** in Settings. That option passes the key saved in your system keychain to Claude Code as `ANTHROPIC_API_KEY`, and usage is billed to your API account instead of your subscription. Use it if you relied on `apiKeyHelper`. Setups that depend on an `env` block in settings (Bedrock, Vertex, a proxy base URL) need those exported in the environment instead. It also needs a Claude Code version that supports `--restricted`; if yours is older, update it with `claude update`.
