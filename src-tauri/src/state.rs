@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
+use livebrainstorm_core::instructions::InstructionStore;
 use livebrainstorm_core::local::{LocalPaths, LocalServer};
 use livebrainstorm_core::project::{BriefStore, ProjectIndex, StoredBrief};
 use livebrainstorm_core::settings::Settings;
@@ -12,6 +13,8 @@ pub struct AppState {
     pub settings_path: std::path::PathBuf,
     pub settings: RwLock<Settings>,
     pub briefs: BriefStore,
+    /// Session instructions and templates (`instructions.json`).
+    pub instructions: InstructionStore,
     pub local_paths: LocalPaths,
     pub project: RwLock<Option<Arc<ProjectIndex>>>,
     pub brief: RwLock<Option<StoredBrief>>,
@@ -32,6 +35,7 @@ impl AppState {
             settings: RwLock::new(Settings::load(&settings_path)),
             settings_path,
             briefs: BriefStore::new(data_dir.join("briefs")),
+            instructions: InstructionStore::new(config_dir.join("instructions.json")),
             local_paths: LocalPaths::new(data_dir),
             project: RwLock::new(None),
             brief: RwLock::new(None),

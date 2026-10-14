@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use livebrainstorm_core::agents;
 use livebrainstorm_core::analysis::{self, PreInput, PreOutcome, PRE_BUDGET};
+use livebrainstorm_core::instructions::{InstructionsView, ProjectInstructions, Template};
 use livebrainstorm_core::jev::key::KeyStatus;
 use livebrainstorm_core::jev::check::{self, CheckEvent, CheckResult};
 use livebrainstorm_core::llm::Chunk;
@@ -227,10 +228,40 @@ pub async fn build_brief(app: AppHandle, on_event: Channel<UiEvent>) -> Result<(
     Ok(())
 }
 
+// ---------- session instructions ----------
+
+/// Never fails: a missing or unreadable file gives the starter templates, so
+/// instructions can't block opening a project.
+#[tauri::command]
+pub fn get_instructions(state: State<'_, AppState>, root: String) -> InstructionsView {
+    state.instructions.view(&root)
+}
+
+#[tauri::command]
+pub fn save_project_instructions(state: State<'_, AppState>, root: String, instructions: ProjectInstructions) -> Result<()> {
+    state.instructions.save_project(&root, instructions)
+}
+
+#[tauri::command]
+pub fn save_templates(state: State<'_, AppState>, templates: Vec<Template>) -> Result<()> {
+    state.instructions.save_templates(templates)
+}
+
+#[tauri::command]
+pub fn restore_starter_templates(state: State<'_, AppState>) -> Result<Vec<Template>> {
+    state.instructions.restore_starters()
+}
+
 // ---------- live analysis ----------
 
 #[tauri::command]
-pub async fn analyze(app: AppHandle, draft: String, previous_draft: Option<String>, on_event: Channel<UiEvent>) -> Result<()> {
+pub async fn analyze(
+    app: AppHandle,
+    draft: String,
+    previous_draft: Option<String>,
+    instructions: String,
+    on_event: Channel<UiEvent>,
+) -> Result<()> {
     let task_app = app.clone();
     let task = tauri::async_runtime::spawn(async move {
         let state = task_app.state::<AppState>();
@@ -274,7 +305,7 @@ pub async fn analyze(app: AppHandle, draft: String, previous_draft: Option<Strin
         let mut faults_tx = Some(faults_tx);
         let mut lanes = Vec::new();
         for (lane, sections) in groups.iter().enumerate() {
-            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, sections, "");
+            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, sections, &instructions);
             let tx = if sections.contains(&"Faults") { faults_tx.take() } else { None };
             let (provider, on_event) = (&provider, &on_event);
             lanes.push(async move {
