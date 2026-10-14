@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use livebrainstorm_core::agents;
 use livebrainstorm_core::analysis::{self, PreInput, PreOutcome, PRE_BUDGET};
+use livebrainstorm_core::jev::key::KeyStatus;
 use livebrainstorm_core::jev::check::{self, CheckEvent, CheckResult};
 use livebrainstorm_core::llm::Chunk;
 use livebrainstorm_core::local::{self, catalog, download, runtime, LocalInventory};
@@ -104,6 +105,17 @@ pub fn set_api_key(key: String) -> Result<()> {
 #[tauri::command]
 pub fn has_api_key() -> bool {
     matches!(secrets::api_key(), Ok(Some(_)))
+}
+
+#[tauri::command]
+pub fn set_jev_key(key: String) -> Result<()> {
+    secrets::set_jev_key(&key)
+}
+
+/// Where the TypeSafe key comes from, never the key itself.
+#[tauri::command]
+pub fn jev_status() -> KeyStatus {
+    KeyStatus { source: secrets::jev_key_with_source().map(|(_, source)| source) }
 }
 
 /// Returns the CLI version, proving it's installed and runnable.

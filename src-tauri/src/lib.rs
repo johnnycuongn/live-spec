@@ -24,6 +24,8 @@ pub fn run() {
             commands::save_settings,
             commands::set_api_key,
             commands::has_api_key,
+            commands::set_jev_key,
+            commands::jev_status,
             commands::check_claude,
             commands::warm_up,
             commands::open_project,

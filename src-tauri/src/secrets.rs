@@ -1,6 +1,7 @@
 //! Secrets live in the OS keychain (Keychain / Credential Manager / Secret
 //! Service), never in settings.json or the webview.
 
+use livebrainstorm_core::jev::key::{pick_key, KeySource};
 use livebrainstorm_core::{Error, Result};
 
 const SERVICE: &str = "app.livebrainstorm.desktop";
@@ -25,7 +26,16 @@ pub fn api_key() -> Result<Option<String>> {
 }
 
 pub fn set_api_key(key: &str) -> Result<()> {
-    let entry = entry(ACCOUNT)?;
+    set_secret(ACCOUNT, key, "API key")
+}
+
+/// Saves the TypeSafe key to the Keychain; an empty key removes it.
+pub fn set_jev_key(key: &str) -> Result<()> {
+    set_secret(JEV_ACCOUNT, key, "TypeSafe key")
+}
+
+fn set_secret(account: &str, key: &str, what: &str) -> Result<()> {
+    let entry = entry(account)?;
     let result = if key.trim().is_empty() {
         match entry.delete_credential() {
             Err(keyring::Error::NoEntry) => Ok(()),
@@ -34,19 +44,17 @@ pub fn set_api_key(key: &str) -> Result<()> {
     } else {
         entry.set_password(key.trim())
     };
-    result.map_err(|e| Error::Provider(format!("Couldn't save the API key to the keychain: {e}")))
+    result.map_err(|e| Error::Provider(format!("Couldn't save the {what} to the keychain: {e}")))
 }
 
 /// The TypeSafe key: Keychain, then `TYPESAFE_API_KEY`, then (debug builds
 /// only) the repo's `.env.local`. It never crosses IPC.
 pub fn jev_key() -> Option<String> {
-    let present = |k: String| Some(k.trim().to_owned()).filter(|k| !k.is_empty());
-    keychain_get(JEV_ACCOUNT)
-        .ok()
-        .flatten()
-        .and_then(present)
-        .or_else(|| std::env::var(JEV_ENV).ok().and_then(present))
-        .or_else(dev_env_file_key)
+    jev_key_with_source().map(|(key, _)| key)
+}
+
+pub fn jev_key_with_source() -> Option<(String, KeySource)> {
+    pick_key(keychain_get(JEV_ACCOUNT).ok().flatten(), std::env::var(JEV_ENV).ok(), dev_env_file_key)
 }
 
 /// Release builds never read a `.env` from the source tree.
