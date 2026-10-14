@@ -6,6 +6,7 @@
 
 pub mod brief;
 pub mod digest;
+pub mod explore;
 pub mod retrieve;
 pub mod scan;
 pub(crate) mod terms;
