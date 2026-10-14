@@ -532,6 +532,7 @@ Run each check before the phase that needs it, and record the results in this sp
 1. **Phase 3:** on macOS, does ⌘Q fire `CloseRequested` for each window before `ExitRequested`? If it does, the close handler must skip `close_window` once `ExitRequested` has fired. Measure the event order with a logging build before relying on that.
 2. **Phase 3:** does a capability with `"windows": ["w-*"]` apply to windows created at runtime with those labels?
 3. **Phase 4:** does the pinned `llama-server` build (`LLAMA_CPP_BUILD`) return `usage` in its final streamed chunk when asked with `stream_options.include_usage`? If not, local runs use the `Meter` estimate (cost $0 either way).
+   **Result (2026-10-15, b11480):** outcome A. With `stream_options.include_usage` the reply is 200 and the chunk before `[DONE]` carries `"usage":{"completion_tokens":8,"prompt_tokens":75,"total_tokens":83,"prompt_tokens_details":{"cached_tokens":0}}`. Without it, usage is absent (HTTP 200, no `usage` object; the final chunk carries only `timings`). Local runs are recorded from that usage, at $0.
 
 ### Phases
 
