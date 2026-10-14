@@ -254,7 +254,7 @@ fn result_usage(v: &Value, requested: &str) -> Vec<Usage> {
         Vec::new()
     };
     // A failed run (bad key, auth failure) can report all zeros: that is not usage.
-    usage.retain(|u| u.input + u.cache_write + u.cache_read + u.output > 0);
+    usage.retain(|u| [u.input, u.cache_write, u.cache_read, u.output].iter().any(|&n| n > 0));
     for u in &mut usage {
         if u.cost_usd.is_none() {
             let listed = price(&u.model).map(|p| p.cost(u));
@@ -409,6 +409,16 @@ mod tests {
         let r = r#"{"type":"result","is_error":false,"result":"x","modelUsage":{"claude-sonnet-5-5":{"inputTokens":0,"outputTokens":0,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0},"claude-haiku-5-5":{"inputTokens":2,"outputTokens":3,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.001}}}"#;
         let [CliEvent::Result { usage, .. }] = &parse_line(r, "haiku")[..] else { panic!("one result") };
         assert_eq!(usage, &vec![haiku(2, 0, 0, 3, 0.001)]);
+    }
+
+    #[test]
+    fn counts_that_would_overflow_a_sum_are_still_usage() {
+        let big = u64::MAX;
+        let r = format!(
+            r#"{{"type":"result","is_error":false,"result":"x","usage":{{"input_tokens":{big},"output_tokens":{big},"cache_read_input_tokens":{big},"cache_creation_input_tokens":{big}}}}}"#
+        );
+        let [CliEvent::Result { usage, .. }] = &parse_line(&r, "haiku")[..] else { panic!("one result") };
+        assert_eq!(usage.len(), 1, "a wrapped sum must not drop real usage");
     }
 
     fn request(allow_repo_tools: bool) -> ChatRequest {
