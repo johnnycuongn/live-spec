@@ -7,6 +7,7 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::store::{self, Loaded};
 use crate::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -162,36 +163,19 @@ impl InstructionStore {
     }
 
     fn read(&self) -> Result<InstructionsFile> {
-        match std::fs::read(&self.path) {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes).unwrap_or_else(|_| self.set_aside())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(InstructionsFile::default()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    /// Keeps a file that parsed badly instead of overwriting the user's
-    /// templates on the next save (settings.json just resets; this holds their
-    /// writing). An earlier kept copy is never replaced: `.bad`, `.bad.1`, …
-    fn set_aside(&self) -> InstructionsFile {
-        let name = self.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let kept = (0u32..)
-            .map(|n| self.path.with_file_name(if n == 0 { format!("{name}.bad") } else { format!("{name}.bad.{n}") }))
-            .find(|p| !p.exists());
-        if let Some(kept) = kept {
-            let _ = std::fs::rename(&self.path, kept);
-        }
-        InstructionsFile::default()
+        // A file that doesn't parse is kept as `.bad`, `.bad.1`, … instead of
+        // being overwritten by the next save (settings.json just resets; this
+        // holds the user's writing). A file that can't be read right now is an
+        // error, so `update` never writes over it.
+        Ok(match store::load_json(&self.path)? {
+            Loaded::Parsed(file) => file,
+            Loaded::Missing | Loaded::Corrupt { .. } => InstructionsFile::default(),
+        })
     }
 
     /// Atomic write: never leaves a half-written file behind.
     fn write(&self, file: &InstructionsFile) -> Result<()> {
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(file)?)?;
-        std::fs::rename(tmp, &self.path)?;
-        Ok(())
+        store::write_atomic(&self.path, &serde_json::to_vec_pretty(file)?)
     }
 }
 

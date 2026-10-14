@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use futures_util::stream::{self, StreamExt};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::{Jev, Options, Question};
@@ -32,7 +32,7 @@ const SOURCE_EXTS: &[&str] = &[
     "swift", "c", "h", "cpp", "rb", "php", "yml", "yaml", "sh", "sql",
 ];
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Verdict {
     Confirmed,
@@ -42,7 +42,7 @@ pub enum Verdict {
     NotFound,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckResult {
     pub claim: String,
@@ -305,6 +305,20 @@ mod tests {
         let (claims, total) = extract_claims("- `a` is wrong\n- Nothing so far.\n* second\n1. third\nprose");
         assert_eq!(claims, ["`a` is wrong", "second", "third"]);
         assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn check_results_round_trip_through_json() {
+        let r = CheckResult {
+            claim: "`x` is wrong".into(),
+            verdict: Verdict::NotShown,
+            confidence: Some(0.9),
+            path: Some("src/x.rs".into()),
+            line: Some(3),
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        assert_eq!(json, r#"{"claim":"`x` is wrong","verdict":"notShown","confidence":0.9,"path":"src/x.rs","line":3}"#);
+        assert_eq!(serde_json::from_str::<CheckResult>(&json).unwrap(), r, "saved checks read back unchanged");
     }
 
     #[test]

@@ -16,5 +16,6 @@ pub mod project;
 pub mod prompt;
 pub mod settings;
 pub mod shell_env;
+pub mod store;
 
 pub use error::{Error, Result};
