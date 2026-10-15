@@ -5,8 +5,9 @@ import type { WindowSummary } from "./ipc";
 import { tabTitle } from "./tabTitle";
 
 export interface MoveDeps {
-  /** Saves the pending draft edit now; false means it could not be saved. */
-  flush: () => Promise<boolean | void>;
+  /** Saves the tab's pending draft edit now (only that tab's: another tab's owed save is not
+   *  this move's concern); false means it could not be saved. */
+  flush: (tabId: string) => Promise<boolean | void>;
   /** `api.moveTab`: resolves to the window the tab is now in. */
   move: (tabId: string, to: string | null) => Promise<string>;
   /** Disposes this window's TabSession for the tab and forgets it. */
@@ -16,7 +17,7 @@ export interface MoveDeps {
 /** `to` null moves the tab to a new window. Rejects, keeping the tab here, if the draft can't be
  *  saved (the receiving window would load an older one) or the move fails. */
 export async function moveTabTo(tabId: string, to: string | null, deps: MoveDeps): Promise<string> {
-  if ((await deps.flush()) === false) throw "Couldn't save your draft, so the tab stayed in this window.";
+  if ((await deps.flush(tabId)) === false) throw "Couldn't save your draft, so the tab stayed in this window.";
   const target = await deps.move(tabId, to);
   deps.forget(tabId);
   return target;

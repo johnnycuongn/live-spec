@@ -232,6 +232,36 @@ describe("load failures and ordering", () => {
     expect(projectsState().instructionsErrors["/a"]).toBeUndefined();
   });
 
+  it("reloading one root's instructions is not held up by another root's failed save", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/a", 1));
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure("/a");
+    projects.ensure("/b");
+    await settle();
+    api.saveProjectInstructions.mockImplementation((root: string) => (root === "/a" ? Promise.reject("disk full") : Promise.resolve()));
+    projects.changeInstructions("/a", { default: "", current: "typed in a", templateId: null });
+    await projects.flush();
+    api.getInstructions.mockResolvedValue(instructionsView("from disk b"));
+    await projects.reloadInstructions("/b");
+    expect(projectsState().instructions["/b"].current).toBe("from disk b"); // /a's owed save is not /b's
+    await projects.reloadInstructions("/a");
+    expect(projectsState().instructions["/a"].current).toBe("typed in a"); // /a's own is kept
+  });
+
+  it("a refetch that keeps typed text because its save failed leaves the save error up", async () => {
+    const { projects, projectsState } = await fresh();
+    api.projectSummary.mockResolvedValue(summary("/p", 1));
+    api.getInstructions.mockResolvedValue(instructionsView(""));
+    projects.ensure("/p");
+    await settle();
+    api.saveProjectInstructions.mockRejectedValue("disk full");
+    projects.changeInstructions("/p", { default: "", current: "typed", templateId: null });
+    await projects.reloadInstructions("/p");
+    expect(projectsState().instructions["/p"].current).toBe("typed");
+    expect(projectsState().instructionsErrors["/p"]).toBe("Couldn't save instructions: disk full");
+  });
+
   it("a refetch is not allowed to replace typed text whose save failed", async () => {
     const { projects, projectsState } = await fresh();
     api.projectSummary.mockResolvedValue(summary("/p", 1));

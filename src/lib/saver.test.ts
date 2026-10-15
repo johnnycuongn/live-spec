@@ -135,4 +135,81 @@ describe("createSaver", () => {
     await expect(s.flush()).resolves.toBe(true);
     expect(save).toHaveBeenCalledTimes(calls); // both saved: nothing left owed
   });
+
+  describe("flush(key)", () => {
+    /** /a always fails; everything else saves. */
+    const aFails = () => vi.fn((k: string, _v: string) => (k === "/a" ? Promise.reject(new Error("disk full")) : Promise.resolve()));
+
+    it("reports only that key: another key's owed save does not make it false", async () => {
+      const s = createSaver(aFails(), 500, () => {});
+      s.schedule("/a", "a1");
+      await expect(s.flush("/a")).resolves.toBe(false);
+      s.schedule("/b", "b1");
+      await expect(s.flush("/b")).resolves.toBe(true); // /a is still owed, but it is not /b's
+      await expect(s.flush("/a")).resolves.toBe(false); // /a itself is still refused
+      await expect(s.flush()).resolves.toBe(false); // the global flush still sees /a
+    });
+
+    it("retries only that key's owed save", async () => {
+      const save = aFails();
+      const s = createSaver(save, 500, () => {});
+      s.schedule("/a", "a1");
+      await s.flush("/a");
+      expect(save).toHaveBeenCalledTimes(1);
+      s.schedule("/b", "b1");
+      await s.flush("/b");
+      expect(save.mock.calls.map((c) => c[0])).toEqual(["/a", "/b"]); // /a was not retried by /b's flush
+      await s.flush("/a");
+      expect(save.mock.calls.map((c) => c[0])).toEqual(["/a", "/b", "/a"]);
+    });
+
+    it("does not send, or cancel the timer of, another key's pending edit", async () => {
+      const save = vi.fn((_k: string, _v: string) => Promise.resolve());
+      const s = createSaver(save, 500, () => {});
+      s.schedule("/a", "a1");
+      await expect(s.flush("/b")).resolves.toBe(true);
+      expect(save).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(save).toHaveBeenCalledWith("/a", "a1");
+    });
+
+    it("sends its own key's pending edit and waits for its in-flight save", async () => {
+      let finish!: () => void;
+      const save = vi.fn((_k: string, _v: string) => new Promise<void>((resolve) => (finish = resolve)));
+      const s = createSaver(save, 500, () => {});
+      s.schedule("/a", "a1");
+      let done = false;
+      const flushed = s.flush("/a").then((ok) => ((done = true), ok));
+      expect(save).toHaveBeenCalledWith("/a", "a1");
+      await Promise.resolve();
+      expect(done).toBe(false);
+      finish();
+      await expect(flushed).resolves.toBe(true);
+    });
+
+    it("does not wait for another key's in-flight save", async () => {
+      const save = vi.fn((_k: string, _v: string) => new Promise<void>(() => {})); // never settles
+      const s = createSaver(save, 500, () => {});
+      s.schedule("/a", "a1");
+      await vi.advanceTimersByTimeAsync(500); // /a is in flight
+      await expect(s.flush("/b")).resolves.toBe(true);
+    });
+  });
+
+  it("owed counts the failed saves not yet superseded or retried", async () => {
+    let ok = false;
+    const save = vi.fn((_k: string, _v: string) => (ok ? Promise.resolve() : Promise.reject(new Error("disk full"))));
+    const s = createSaver(save, 500, () => {});
+    expect(s.owed()).toBe(0);
+    s.schedule("/a", "a1");
+    await s.flush();
+    s.schedule("/b", "b1");
+    await s.flush();
+    expect(s.owed()).toBe(2);
+    s.schedule("/a", "a2"); // supersedes
+    expect(s.owed()).toBe(1);
+    ok = true;
+    await s.flush();
+    expect(s.owed()).toBe(0);
+  });
 });

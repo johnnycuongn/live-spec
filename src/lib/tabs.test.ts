@@ -176,6 +176,40 @@ describe("tabs store", () => {
     expect(workspaceState().error).toMatch(/draft/i);
   });
 
+  it("another tab's owed save does not block closing or moving this one", async () => {
+    const { tabs, sessionFor, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
+    sessionFor("a1")!.setDraft("typed in a1");
+    api.saveDraft.mockImplementation((id: string) => (id === "a1" ? Promise.reject("disk full") : Promise.resolve()));
+    await tabs.flush("a1"); // a1's save fails and stays owed
+    expect(workspaceState().saveError).toMatch(/disk full/);
+    await tabs.close("b1"); // b1 is healthy
+    expect(api.closeTab).toHaveBeenCalledWith("b1");
+    await tabs.move("a2", "w-2"); // so is a2
+    expect(api.moveTab).toHaveBeenCalledWith("a2", "w-2");
+    api.closeTab.mockClear();
+    api.moveTab.mockClear();
+    await tabs.close("a1"); // a1 itself is still refused
+    expect(api.closeTab).not.toHaveBeenCalled();
+    await tabs.move("a1", "w-2");
+    expect(api.moveTab).not.toHaveBeenCalled();
+    expect(workspaceState().error).toMatch(/draft/i);
+  });
+
+  it("a successful save keeps the save error while another tab's save is still owed", async () => {
+    const { tabs, sessionFor, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
+    sessionFor("a1")!.setDraft("typed in a1");
+    api.saveDraft.mockImplementation((id: string) => (id === "a1" ? Promise.reject("disk full") : Promise.resolve()));
+    await tabs.flush("a1");
+    api.getTab.mockResolvedValue(full("b1", "/b"));
+    await tabs.switchTo("b1");
+    sessionFor("b1")!.setDraft("typed in b1");
+    await tabs.flush("b1"); // b1 saves fine
+    expect(workspaceState().saveError).toMatch(/disk full/); // a1 is still owed
+    api.saveDraft.mockResolvedValue(undefined);
+    await tabs.flush(); // a1 retried and saved
+    expect(workspaceState().saveError).toBeNull();
+  });
+
   it("a tab moved here from another window is shown", async () => {
     const { tabs, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
     api.listWorkspace.mockResolvedValue(view([...stored, summary("m1", "/m")], full("m1", "/m")));

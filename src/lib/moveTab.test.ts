@@ -41,6 +41,14 @@ describe("moveTabTo", () => {
   });
 });
 
+describe("moveTabTo flushes only the tab being moved", () => {
+  it("asks for the tab's own flush, by id", async () => {
+    const flush = vi.fn(async (_tabId: string) => true);
+    await moveTabTo("t-1", "w-2", { flush, move: async () => "w-2", forget: () => {} });
+    expect(flush).toHaveBeenCalledWith("t-1");
+  });
+});
+
 describe("moveTabTo with a flush that reports failure", () => {
   it("does not move or forget the tab when the draft could not be saved", async () => {
     const move = vi.fn(async () => "w-2");

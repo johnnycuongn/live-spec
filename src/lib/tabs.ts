@@ -42,7 +42,7 @@ function set(patch: Partial<WorkspaceState>) {
 const saver = createSaver<string>(
   (id, draft) =>
     api.saveDraft(id, draft).then(() => {
-      if (state.saveError) set({ saveError: null });
+      if (state.saveError && saver.owed() === 0) set({ saveError: null }); // another tab may still be owed
     }),
   500,
   (e) => set({ saveError: `Couldn't save your draft: ${errorMessage(e)}` }),
@@ -173,10 +173,11 @@ async function newTab(root: string | null): Promise<void> {
   }
 }
 
-/** Saves the pending draft before a tab leaves this window's session (closed or moved), and
- *  says so when it can't: the stored copy would be older than the text on screen. */
-async function draftSaved(action: string): Promise<boolean> {
-  if (await saver.flush()) return true;
+/** Saves the tab's pending draft before it leaves this window's session (closed or moved), and
+ *  says so when it can't: the stored copy would be older than the text on screen. Only this
+ *  tab's save counts: another tab's owed save does not stop a healthy tab from closing. */
+async function draftSaved(tabId: string, action: string): Promise<boolean> {
+  if (await saver.flush(tabId)) return true;
   set({ error: `Couldn't save your draft, so the tab was not ${action}.` });
   return false;
 }
@@ -185,11 +186,11 @@ async function close(tabId: string): Promise<void> {
   const wasShown = tabId === state.activeId;
   const next = wasShown ? afterClose(order(), tabId) : null;
   set({ error: null });
-  if (!(await draftSaved("closed"))) return; // before switching: a failed save leaves everything as it is
+  if (!(await draftSaved(tabId, "closed"))) return; // before switching: a failed save leaves everything as it is
   // Show the next tab first. Closing the shown tab makes the backend activate its neighbour in the
   // *stored* order, and the workspace-changed refresh would show that tab for a moment.
   if (next) await switchTo(next);
-  await saver.flush();
+  await saver.flush(tabId);
   try {
     await api.closeTab(tabId); // also cancels its run
   } catch (e) {
@@ -210,12 +211,12 @@ async function move(tabId: string, to: string | null): Promise<void> {
   const wasShown = tabId === state.activeId;
   const next = wasShown ? afterClose(order(), tabId) : null;
   set({ error: null });
-  if (!(await draftSaved("moved"))) return;
+  if (!(await draftSaved(tabId, "moved"))) return;
   // As closing does: show the next tab first, so the backend's stored-order pick never flashes.
   if (next) await switchTo(next);
   try {
     await moveTabTo(tabId, to, {
-      flush: () => saver.flush(),
+      flush: (id) => saver.flush(id),
       move: (id, target) => api.moveTab(id, target),
       forget: drop,
     });
@@ -286,8 +287,9 @@ export const tabs = {
   setDebounce: (ms: number) => {
     debounce = ms;
   },
-  /** Saves the pending draft edit now: before closing this window or moving a tab out of it. */
-  flush: () => saver.flush(),
+  /** Saves pending draft edits now, and retries failed ones: every tab's before closing this
+   *  window, or just `tabId`'s. False if any (that tab's) save failed. */
+  flush: (tabId?: string) => saver.flush(tabId),
 };
 
 export function sessionFor(tabId: string): TabSession | undefined {

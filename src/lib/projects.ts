@@ -124,7 +124,7 @@ async function loadSummary(root: string): Promise<void> {
 async function loadInstructions(root: string | null): Promise<void> {
   const edited = edits.get(key(root)) ?? 0;
   const templatesEdited = templateEdits;
-  const saved = await saver.flush(); // a pending edit must not lose to the read below
+  const saved = await saver.flush(key(root)); // this root's pending edit must not lose to the read below; another root's owed save is not its concern
   try {
     const view = await api.getInstructions(key(root));
     // Typed since this load began: the fetched copy is older than the text on screen. Keep the text.
@@ -134,7 +134,8 @@ async function loadInstructions(root: string | null): Promise<void> {
       // Templates edited here during the fetch are newer than the fetched ones, too.
       ...(templateEdits === templatesEdited ? { templates: view.templates } : {}),
       ...(keepTyped ? {} : { instructions: { ...state.instructions, [key(root)]: view.project } }),
-      instructionsErrors: without(state.instructionsErrors, key(root)),
+      // Kept text means a failed save (or a newer edit): its error stays until a save succeeds.
+      ...(keepTyped ? {} : { instructionsErrors: without(state.instructionsErrors, key(root)) }),
     });
   } catch (e) {
     // Not loaded, not empty: empty instructions would re-run a tab's saved notes without the
@@ -253,6 +254,7 @@ export const projects = {
   restoreStarters,
   buildBrief,
   briefStatus,
+  /** Saves every root's pending instructions (all, when the window closes); false if any save failed. */
   flush: () => saver.flush(),
 };
 
