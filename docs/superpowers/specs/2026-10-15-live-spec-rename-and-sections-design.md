@@ -143,16 +143,16 @@ pub fn resolve(ids: &[String]) -> Vec<&'static SectionSpec>;
 
 ### Section parsing (Rust ↔ TypeScript contract)
 
-Both parsers key on the heading's first word, case-insensitively, with the same alias table:
+Both parsers key on the heading's first word, case-insensitively, as an exact word (singular or plural), with the same alias table. A heading line starts with one to four `#` or with `**`, as today, so a bold word inside a bullet never opens a section:
 
-| Heading word starts with | id |
+| Heading's first word | id |
 |---|---|
 | `intent` | `intent` |
-| `conflict`, `fault` | `conflicts` |
-| `gap` | `gaps` |
-| `ambigu` | `ambiguities` |
-| `question` | `questions` |
-| `direction` | `directions` (TypeScript only, display-only legacy) |
+| `conflict`, `conflicts`, `fault`, `faults` | `conflicts` |
+| `gap`, `gaps` | `gaps` |
+| `ambiguity`, `ambiguities` | `ambiguities` |
+| `question`, `questions` | `questions` |
+| `direction`, `directions` | `directions` (TypeScript only, display-only legacy) |
 
 `CATALOGUE` (ids, order, titles, dots) and `DEFAULT_SECTIONS` in Rust ↔ `SECTIONS` and `DEFAULT_SECTIONS` in `src/lib/sections.ts`, kept in sync by hand like the other IPC contracts; both test suites pin the id list. `prompt::section_body(markdown, id)` takes the id. The TypeScript `SECTIONS` list adds `{ key: "directions", title: "Directions", legacy: true }` with the `bg-accent` dot; it is never requested, only rendered when a saved analysis contains it. `MiniMarkdown` is unchanged.
 
