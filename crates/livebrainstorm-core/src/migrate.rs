@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(log.len(), 1, "the same folder, given twice, is handled once: {log:?}");
         assert!(log[0].contains("moved"), "{log:?}");
         let mut again = Vec::new();
-        move_app_dirs(&[new.clone()], OLD_IDENTIFIER, |m| again.push(m));
+        move_app_dirs(std::slice::from_ref(&new), OLD_IDENTIFIER, |m| again.push(m));
         assert!(again.is_empty(), "a second launch says nothing");
     }
 }
