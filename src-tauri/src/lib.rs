@@ -42,7 +42,11 @@ pub fn run() {
                 livespec_core::migrate::OLD_IDENTIFIER,
                 |m| eprintln!("Live Spec: {m}"),
             );
-            secrets::migrate_from_old_service();
+            // Once per install: a key removed after the upgrade must not come back at the next launch.
+            let marker = config_dir.join(".keychain-migrated");
+            if let Err(e) = livespec_core::migrate::once(&marker, secrets::migrate_from_old_service) {
+                eprintln!("Live Spec: couldn't record the keychain migration: {e}");
+            }
             app.manage(AppState::new(&data_dir, &config_dir));
             start_usage_tasks(app.handle());
             // One window per workspace window; tauri.conf.json declares none.

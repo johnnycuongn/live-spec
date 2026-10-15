@@ -83,6 +83,23 @@ pub fn move_app_dirs(new_dirs: &[PathBuf], old_identifier: &str, mut log: impl F
     }
 }
 
+/// Runs `f` unless `marker` exists, then writes the marker (creating its
+/// folder), whatever `f` did. Returns whether `f` ran. A marker that can't be
+/// written is an error after `f` has run: the caller logs it, and the next
+/// launch runs `f` again. For steps like the keychain copy, which must not
+/// repeat: a key the user removes after the upgrade must stay removed.
+pub fn once(marker: &Path, f: impl FnOnce()) -> io::Result<bool> {
+    if marker.exists() {
+        return Ok(false);
+    }
+    f();
+    if let Some(dir) = marker.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(marker, b"")?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +109,17 @@ mod tests {
         fs::create_dir_all(dir.join("sessions/tabs")).unwrap();
         fs::write(dir.join("sessions/tabs/t-1.json"), "{}").unwrap();
         fs::write(dir.join("settings.json"), "{}").unwrap();
+    }
+
+    #[test]
+    fn once_runs_the_first_time_only_and_leaves_its_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("not-yet/.keychain-migrated"); // a fresh install: no config folder yet
+        let mut runs = 0;
+        assert!(once(&marker, || runs += 1).unwrap());
+        assert!(marker.exists());
+        assert!(!once(&marker, || runs += 1).unwrap(), "a later launch skips it");
+        assert_eq!(runs, 1, "a key the user removed after the upgrade is never copied back");
     }
 
     #[test]

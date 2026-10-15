@@ -49,8 +49,8 @@ fn set_secret(account: &str, key: &str, what: &str) -> Result<()> {
     result.map_err(|e| Error::Provider(format!("Couldn't save the {what} to the keychain: {e}")))
 }
 
-/// First launch after the rename: a key saved under the old service name is
-/// copied to the new one. The old entry stays. macOS may ask once to allow
+/// First launch after the rename (`lib.rs` runs it once, behind a marker file):
+/// a key saved under the old service name is copied to the new one. The old entry stays. macOS may ask once to allow
 /// the new app to read the old item. Never fails the launch.
 pub fn migrate_from_old_service() {
     for (account, what) in [(ACCOUNT, "API key"), (JEV_ACCOUNT, "TypeSafe key")] {
