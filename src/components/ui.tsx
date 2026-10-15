@@ -98,6 +98,10 @@ export interface MenuItem {
   label: string;
   onSelect: () => void;
   disabled?: boolean;
+  /** Set: the item is a checkbox (role menuitemcheckbox) with a leading ✓ when true. */
+  checked?: boolean;
+  /** Choosing it leaves the menu open (toggles). */
+  keepOpen?: boolean;
 }
 
 /**
@@ -152,6 +156,7 @@ export function Menu({ at, items, label, onClose }: { at: { x: number; y: number
     };
   }, []);
 
+  const toggles = items.some((item) => item.checked !== undefined);
   // Keep it on screen near the edges.
   const style = {
     left: Math.max(4, Math.min(at.x, window.innerWidth - 224)),
@@ -169,15 +174,27 @@ export function Menu({ at, items, label, onClose }: { at: { x: number; y: number
         <button
           key={item.label}
           type="button"
-          role="menuitem"
+          role={item.checked === undefined ? "menuitem" : "menuitemcheckbox"}
+          aria-checked={item.checked}
           disabled={item.disabled}
-          className="cursor-pointer rounded px-2.5 py-1.5 text-left text-[13px] text-ink hover:bg-subtle focus-visible:bg-subtle focus-visible:outline-none disabled:cursor-default disabled:opacity-50"
+          className={cx(
+            "cursor-pointer rounded px-2.5 py-1.5 text-left text-[13px] text-ink hover:bg-subtle focus-visible:bg-subtle focus-visible:outline-none disabled:cursor-default disabled:opacity-50",
+            toggles && "grid grid-cols-[1rem_1fr] items-center gap-1",
+          )}
           onClick={() => {
-            close.current();
+            if (!item.keepOpen) close.current();
             item.onSelect();
           }}
         >
-          {item.label}
+          {/* Only a menu of toggles gets the mark column; plain menus keep their layout. */}
+          {toggles ? (
+            <>
+              <span aria-hidden>{item.checked ? "✓" : ""}</span>
+              <span>{item.label}</span>
+            </>
+          ) : (
+            item.label
+          )}
         </button>
       ))}
     </div>

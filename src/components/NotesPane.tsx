@@ -2,11 +2,11 @@ import { useState } from "react";
 import type { CheckResult } from "../lib/ipc";
 import { VERDICT, checkLocation, checkSummary, plainClaim } from "../lib/checks";
 import { historyPosition, snapshotAnalysis, snapshotTime } from "../lib/history";
-import { SECTIONS, parseSections, type SectionKey } from "../lib/sections";
+import { CATALOGUE, SECTIONS, effectiveSections, parseSections, sectionsSentence, toggleSection } from "../lib/sections";
 import type { TabView } from "../lib/tabSession";
 import { ruleState } from "../lib/tabStatus";
 import { MiniMarkdown } from "./MiniMarkdown";
-import { Button, Eyebrow, RULE, cx, type RuleState } from "./ui";
+import { Button, Eyebrow, Menu, RULE, cx, type RuleState } from "./ui";
 
 interface Props {
   view: TabView;
@@ -16,14 +16,9 @@ interface Props {
   onRerun: () => void;
   /** Shows analysis `index` of the history (0 = latest). */
   onView: (index: number) => void;
+  /** The tab's section choice changed (stored ids; empty is the default set). */
+  onSections: (ids: string[]) => void;
 }
-
-const DOT: Record<SectionKey, string> = {
-  intent: "bg-muted",
-  faults: "bg-fault",
-  directions: "bg-accent",
-  questions: "bg-question",
-};
 
 function statusText(v: TabView) {
   const a = v.analysis;
@@ -112,7 +107,46 @@ function EarlierDraft({ draft }: { draft: string }) {
   );
 }
 
-export function NotesPane({ view, hasProject, briefMissing, onBuildBrief, onRerun, onView }: Props) {
+/** `Sections ▾`: toggles for the catalogue. The last checked one can't be unchecked. */
+function SectionsPicker({ chosen, onChange }: { chosen: string[]; onChange: (ids: string[]) => void }) {
+  const [at, setAt] = useState<{ x: number; y: number } | null>(null);
+  const current = effectiveSections(chosen);
+  return (
+    <>
+      <Button
+        variant="mini"
+        aria-haspopup="menu"
+        aria-expanded={at !== null}
+        title="Which sections the notes cover"
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setAt(at ? null : { x: r.left, y: r.bottom + 4 });
+        }}
+      >
+        Sections ▾
+      </Button>
+      {at && (
+        <Menu
+          at={at}
+          label="Sections"
+          onClose={() => setAt(null)}
+          items={CATALOGUE.map((s) => {
+            const checked = current.includes(s.key);
+            return {
+              label: s.title,
+              checked,
+              keepOpen: true,
+              disabled: checked && current.length === 1,
+              onSelect: () => onChange(toggleSection(chosen, s.key)),
+            };
+          })}
+        />
+      )}
+    </>
+  );
+}
+
+export function NotesPane({ view, hasProject, briefMissing, onBuildBrief, onRerun, onView, onSections }: Props) {
   const older = view.viewing > 0 ? view.history[view.viewing] : undefined;
   // An older analysis is read-only: its notes, checks and notices, never a retry.
   const a = older ? snapshotAnalysis(older) : view.analysis;
@@ -127,9 +161,12 @@ export function NotesPane({ view, hasProject, briefMissing, onBuildBrief, onReru
         {older ? (
           <EarlierDraft key={older.id} draft={older.draft} />
         ) : (
-          <p className="mb-5 text-xs text-faint" aria-live="polite">
-            {statusText(view)}
-          </p>
+          <div className="mb-5 flex items-center justify-between gap-2">
+            <p className="text-xs text-faint" aria-live="polite">
+              {statusText(view)}
+            </p>
+            <SectionsPicker chosen={view.sections} onChange={onSections} />
+          </div>
         )}
         {a.notices.map((n, i) => (
           <p key={i} className="mb-2 text-xs text-muted">
@@ -169,27 +206,24 @@ export function NotesPane({ view, hasProject, briefMissing, onBuildBrief, onReru
 
         {a.status === "idle" && (
           <div className="max-w-[46ch] space-y-2.5 text-[13px] leading-relaxed text-muted">
-            <p>Start writing on the left. When you pause, notes appear here:</p>
-            <p>
-              what you seem to be after, faults against how the project actually works, directions worth trying, and the
-              questions that matter most.
-            </p>
+            <p>Start writing your spec on the left. When you pause, notes appear here:</p>
+            <p>{sectionsSentence(view.sections)}</p>
           </div>
         )}
 
         {a.status !== "idle" && a.status !== "error" && (
           <div className={cx("grid gap-6 transition-opacity motion-reduce:transition-none", stale && "opacity-60")}>
-            {SECTIONS.map(({ key, title }) =>
-              sections[key] !== undefined ? (
-                <section key={key} className="grid gap-1.5">
+            {SECTIONS.map((s) =>
+              sections[s.key] !== undefined ? (
+                <section key={s.key} className="grid gap-1.5">
                   <h2>
-                    <Eyebrow dot={DOT[key]}>{title}</Eyebrow>
+                    <Eyebrow dot={s.dot}>{s.title}</Eyebrow>
                   </h2>
-                  <MiniMarkdown text={sections[key]!} />
+                  <MiniMarkdown text={sections[s.key]!} />
                 </section>
               ) : null,
             )}
-            {a.status === "thinking" && !a.markdown && <p className="text-[13px] text-muted">Reading your draft against the project…</p>}
+            {a.status === "thinking" && !a.markdown && <p className="text-[13px] text-muted">Reading your spec against the project…</p>}
             {a.checking && (
               <section className="grid gap-1.5">
                 <h2>

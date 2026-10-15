@@ -267,6 +267,7 @@ export default function App() {
               }}
               onRerun={() => session.rerun()}
               onView={(i) => session.view(i)}
+              onSections={(ids) => void tabs.setSections(session.id, ids)}
             />
           </>
         ) : (
