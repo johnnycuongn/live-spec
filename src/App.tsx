@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { api, errorMessage, type Settings } from "./lib/ipc";
 import { providerLabel } from "./lib/providerOptions";
 import { EMPTY_INSTRUCTIONS, instructionsLabel } from "./lib/instructions";
 import { useActions } from "./lib/actions";
+import { createCloseGuard } from "./lib/closeGuard";
 import { useCrossWindowRefresh } from "./lib/crossWindow";
 import { IDLE_BRIEF, projects, projectsState, useProjects } from "./lib/projects";
 import { projectName, readCollapsed, rowTitle, windowTitle, writeCollapsed } from "./lib/tabList";
@@ -36,6 +37,15 @@ export default function App() {
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
   const [windowError, setWindowError] = useState<string | null>(null);
+  // Close Window needs every save to land; if one keeps failing, a second press closes anyway.
+  const closeGuard = useMemo(
+    () =>
+      createCloseGuard(
+        async () => (await Promise.all([tabs.flush(), projects.flush()])).every(Boolean),
+        () => getCurrentWindow().close(),
+      ),
+    [],
+  );
   const [collapsed, setCollapsed] = useState(() => readCollapsed(currentWindowId(), window.innerWidth));
 
   const session = ws.activeId ? (sessionFor(ws.activeId) ?? null) : null;
@@ -66,7 +76,8 @@ export default function App() {
   useEffect(() => {
     setOpenError(null);
     setWindowError(null);
-  }, [ws.activeId]);
+    closeGuard.disarm();
+  }, [ws.activeId, closeGuard]);
 
   useWindowTitle(windowTitle(title));
 
@@ -130,36 +141,46 @@ export default function App() {
 
   // ⌘⇧W. Saves the pending draft and instructions first; the shell then applies the close
   // rules (on_window_event): with other windows open, this window's tabs go to Recently closed.
+  // The local session is dropped with the window, so an edit that can't be saved refuses the
+  // close once; a second Close Window right after closes anyway (closeGuard.ts).
   const closeWindow = () => {
     setWindowError(null);
-    Promise.all([tabs.flush(), projects.flush()])
-      .then((saved) => {
-        // The local session is dropped with the window: close only if everything reached disk.
-        if (!saved.every(Boolean)) throw "Your latest edits couldn't be saved.";
-        return getCurrentWindow().close();
+    closeGuard
+      .request()
+      .then((r) => {
+        if (r === "refused") setWindowError("Your latest edits couldn't be saved. Press Close Window again to close anyway.");
       })
       .catch((e: unknown) => setWindowError(`Couldn't close the window: ${errorMessage(e)}`));
   };
 
+  /** Any action but Close Window cancels a pending "close anyway". */
+  const other = (f: () => void) => () => {
+    if (closeGuard.armed()) {
+      closeGuard.disarm();
+      setWindowError(null);
+    }
+    f();
+  };
+
   useActions({
-    "new-window": () => {
+    "new-window": other(() => {
       setWindowError(null);
       api.openWindow().catch((e: unknown) => setWindowError(errorMessage(e)));
-    },
+    }),
     "close-window": closeWindow,
-    "new-tab": () => void tabs.newTab(root),
-    "open-project": () => void openFolder(),
-    "reopen-tab": () => {
+    "new-tab": other(() => void tabs.newTab(root)),
+    "open-project": other(() => void openFolder()),
+    "reopen-tab": other(() => {
       const last = ws.view?.closed[0];
       if (last) void tabs.reopen(last.id);
-    },
-    "close-tab": () => {
+    }),
+    "close-tab": other(() => {
       if (ws.activeId) void tabs.close(ws.activeId);
-    },
-    "next-tab": () => tabs.next(1),
-    "prev-tab": () => tabs.next(-1),
-    "toggle-sidebar": toggleSidebar,
-    settings: () => setShowSettings(true),
+    }),
+    "next-tab": other(() => tabs.next(1)),
+    "prev-tab": other(() => tabs.next(-1)),
+    "toggle-sidebar": other(toggleSidebar),
+    settings: other(() => setShowSettings(true)),
   });
 
   const saveSettings = async (s: Settings) => {
