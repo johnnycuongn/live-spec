@@ -71,7 +71,7 @@ mod tests {
     fn the_last_window_is_never_closed() {
         let (_dir, s) = store();
         let w1 = s.window_ids()[0].clone();
-        let tab = s.create_tab(&w1, Some("/p".into())).unwrap();
+        let tab = s.create_tab(&w1, Some("/p".into()), vec![]).unwrap();
         assert_eq!(s.close_window_unless_last(&w1).unwrap(), None);
         assert_eq!(s.window_ids(), [w1.as_str()]);
         assert_eq!(ids(&s.window_view(&w1).unwrap().tabs), [tab.id.as_str()]);
@@ -115,8 +115,8 @@ mod tests {
         let (_dir, s) = store();
         let w1 = s.window_ids()[0].clone();
         let w2 = s.add_window().unwrap();
-        let a = s.create_tab(&w2, None).unwrap();
-        let b = s.create_tab(&w2, Some("/p".into())).unwrap();
+        let a = s.create_tab(&w2, None, vec![]).unwrap();
+        let b = s.create_tab(&w2, Some("/p".into()), vec![]).unwrap();
         let mut closed = s.close_window_unless_last(&w2).unwrap().expect("another window is open");
         closed.sort();
         let mut both = vec![a.id.clone(), b.id.clone()];
@@ -134,7 +134,7 @@ mod tests {
         // The webview's pending draft save can land after the shell closed its window.
         let (_dir, s) = store();
         let w2 = s.add_window().unwrap();
-        let tab = s.create_tab(&w2, None).unwrap();
+        let tab = s.create_tab(&w2, None, vec![]).unwrap();
         s.close_window_unless_last(&w2).unwrap();
         s.save_draft(&tab.id, "typed just before closing".into()).unwrap();
         assert_eq!(s.tab(&tab.id).unwrap().draft, "typed just before closing");
@@ -166,8 +166,8 @@ mod tests {
         let (_dir, s) = store();
         let w1 = s.window_ids()[0].clone();
         let w2 = s.add_window().unwrap();
-        s.create_tab(&w1, None).unwrap();
-        let b = s.create_tab(&w1, Some("/p".into())).unwrap(); // made active
+        s.create_tab(&w1, None, vec![]).unwrap();
+        let b = s.create_tab(&w1, Some("/p".into()), vec![]).unwrap(); // made active
         s.rename_tab(&b.id, Some("Checkout retry".into())).unwrap();
         let list = s.windows().unwrap();
         assert_eq!(list.iter().map(|w| w.id.as_str()).collect::<Vec<_>>(), [w1.as_str(), w2.as_str()]);
@@ -181,8 +181,8 @@ mod tests {
     fn a_moved_tab_leaves_its_window_and_shows_in_the_new_one() {
         let (_dir, s) = store();
         let w1 = s.window_ids()[0].clone();
-        let a = s.create_tab(&w1, None).unwrap();
-        let b = s.create_tab(&w1, None).unwrap(); // active
+        let a = s.create_tab(&w1, None, vec![]).unwrap();
+        let b = s.create_tab(&w1, None, vec![]).unwrap(); // active
         let (from, to) = s.move_tab(&b.id, None).unwrap();
         assert_eq!(from, w1);
         assert!(s.window_ids().contains(&to), "None makes a new window");

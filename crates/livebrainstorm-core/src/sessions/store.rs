@@ -13,6 +13,7 @@ use serde::Serialize;
 use super::{first_line, tab_id, valid_id, LegacyDraft, Snapshot, Tab, TabSummary, WindowView, Workspace, HISTORY_LEN};
 use crate::jev::check::CheckEvent;
 use crate::store::{load_json, write_atomic, Loaded};
+use crate::sections;
 use crate::{Error, Result};
 
 pub struct SessionStore {
@@ -113,8 +114,9 @@ impl SessionStore {
 
     // ---------- tabs ----------
 
-    /// A new, empty tab at the end of `window`, made active.
-    pub fn create_tab(&self, window: &str, root: Option<String>) -> Result<Tab> {
+    /// A new, empty tab at the end of `window`, made active, with `sections`
+    /// (unknown ids dropped; nothing known means the default set).
+    pub fn create_tab(&self, window: &str, root: Option<String>, sections: Vec<String>) -> Result<Tab> {
         validate(window)?;
         let mut guard = self.lock();
         let inner = &mut *guard;
@@ -122,7 +124,8 @@ impl SessionStore {
         if ws.window_mut(window).is_none() {
             return Err(window_closed());
         }
-        let tab = self.new_tab(inner, root, String::new());
+        let mut tab = self.new_tab(inner, root, String::new());
+        tab.sections = sections::normalize(&sections);
         // The file first: if the app stops before the workspace is saved, the
         // tab shows as closed rather than as a listed id with no file.
         self.put_tab(inner, tab.clone())?;
@@ -179,6 +182,24 @@ impl SessionStore {
             return Ok(());
         }
         tab.title = title;
+        self.put_tab(inner, tab)
+    }
+
+    /// Stores the tab's section choice, normalized. A non-empty list that names
+    /// no catalogue section is refused: the user would see nothing.
+    pub fn set_sections(&self, id: &str, sections: Vec<String>) -> Result<()> {
+        validate(id)?;
+        let normalized = sections::normalize(&sections);
+        if normalized.is_empty() && !sections.is_empty() {
+            return Err(Error::Precondition("Keep at least one section.".into()));
+        }
+        let mut guard = self.lock();
+        let inner = &mut *guard;
+        let mut tab = self.existing_tab(inner, id)?;
+        if tab.sections == normalized {
+            return Ok(());
+        }
+        tab.sections = normalized;
         self.put_tab(inner, tab)
     }
 
@@ -702,7 +723,7 @@ mod tests {
     #[test]
     fn tabs_are_created_saved_and_renamed() {
         let (dir, s) = store();
-        let tab = s.create_tab("w-1", Some("/p".into())).unwrap();
+        let tab = s.create_tab("w-1", Some("/p".into()), vec![]).unwrap();
         assert!(tab.id.starts_with("t-") && valid_id(&tab.id), "{}", tab.id);
         assert_eq!((tab.root.as_deref(), tab.draft.as_str(), tab.next_snapshot), (Some("/p"), "", 1));
         assert!(s.save_draft(&tab.id, "Retry failed payments".into()).unwrap(), "a new first line changes the lists");
@@ -727,10 +748,27 @@ mod tests {
     }
 
     #[test]
+    fn sections_are_stored_normalized_and_a_list_naming_nothing_is_refused() {
+        let (_dir, store) = store();
+        let w = store.window_ids()[0].clone();
+        let tab = store.create_tab(&w, None, vec!["questions".into(), "intent".into(), "bogus".into()]).unwrap();
+        assert_eq!(tab.sections, ["intent", "questions"], "catalogue order, unknown ids dropped");
+        store.set_sections(&tab.id, vec!["gaps".into(), "gaps".into()]).unwrap();
+        assert_eq!(store.tab(&tab.id).unwrap().sections, ["gaps"]);
+        store.set_sections(&tab.id, vec![]).unwrap();
+        assert!(store.tab(&tab.id).unwrap().sections.is_empty(), "empty is the default set");
+        let err = store.set_sections(&tab.id, vec!["bogus".into()]).unwrap_err();
+        assert!(matches!(&err, Error::Precondition(m) if m == "Keep at least one section."), "{err}");
+        assert!(store.tab(&tab.id).unwrap().sections.is_empty(), "the refused list changed nothing");
+        assert!(store.set_sections("t-missing", vec!["gaps".into()]).is_err());
+        assert!(store.set_sections("../x", vec!["gaps".into()]).is_err(), "ids are validated first");
+    }
+
+    #[test]
     fn a_new_tab_goes_last_and_becomes_active() {
         let (_dir, s) = store();
-        let a = s.create_tab("w-1", None).unwrap();
-        let b = s.create_tab("w-1", None).unwrap();
+        let a = s.create_tab("w-1", None, vec![]).unwrap();
+        let b = s.create_tab("w-1", None, vec![]).unwrap();
         assert_ne!(a.id, b.id);
         let view = s.window_view("w-1").unwrap();
         assert_eq!(ids(&view.tabs), [a.id.as_str(), b.id.as_str()]);
@@ -751,7 +789,7 @@ mod tests {
         assert_eq!(s.add_window().unwrap(), "w-2");
         assert_eq!(s.window_ids(), ["w-1", "w-2"]);
         assert_eq!(s.window_view("w-9").unwrap_err().to_string(), "This window was closed.");
-        assert_eq!(s.create_tab("w-9", None).unwrap_err().to_string(), "This window was closed.");
+        assert_eq!(s.create_tab("w-9", None, vec![]).unwrap_err().to_string(), "This window was closed.");
         assert!(s.closed().is_empty(), "no tab file was written for it");
     }
 
@@ -765,7 +803,7 @@ mod tests {
             assert_eq!(s.save_draft(bad, "x".into()).unwrap_err().to_string(), "Unknown tab.", "{bad}");
             assert_eq!(s.record_snapshot(bad, snap("x")).unwrap_err().to_string(), "Unknown tab.", "{bad}");
             assert_eq!(s.window_view(bad).unwrap_err().to_string(), "Unknown tab.", "{bad}");
-            assert_eq!(s.create_tab(bad, None).unwrap_err().to_string(), "Unknown tab.", "{bad}");
+            assert_eq!(s.create_tab(bad, None, vec![]).unwrap_err().to_string(), "Unknown tab.", "{bad}");
         }
         assert_eq!(std::fs::read_to_string(dir.path().join("secret.json")).unwrap(), r#"{"draft":"private"}"#);
         assert!(!sessions(&dir).exists(), "nothing was written");
@@ -774,7 +812,7 @@ mod tests {
     #[test]
     fn history_keeps_the_newest_five() {
         let (_dir, s) = store();
-        let tab = s.create_tab("w-1", None).unwrap();
+        let tab = s.create_tab("w-1", None, vec![]).unwrap();
         let saved: Vec<u64> = (0..7).map(|i| s.record_snapshot(&tab.id, snap(&format!("draft {i}"))).unwrap()).collect();
         assert_eq!(saved, [1, 2, 3, 4, 5, 6, 7]);
         let t = s.tab(&tab.id).unwrap();
@@ -786,7 +824,7 @@ mod tests {
     #[test]
     fn a_damaged_snapshot_counter_at_the_top_of_the_range_does_not_panic() {
         let (dir, s) = store();
-        let tab = s.create_tab("w-1", None).unwrap();
+        let tab = s.create_tab("w-1", None, vec![]).unwrap();
         drop(s);
         let path = sessions(&dir).join(format!("tabs/{}.json", tab.id));
         let mut doc: serde_json::Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -802,7 +840,7 @@ mod tests {
     #[test]
     fn update_snapshot_finds_its_id_and_ignores_trimmed_ones() {
         let (_dir, s) = store();
-        let tab = s.create_tab("w-1", None).unwrap();
+        let tab = s.create_tab("w-1", None, vec![]).unwrap();
         let first = s.record_snapshot(&tab.id, snap("one")).unwrap();
         s.record_snapshot(&tab.id, snap("two")).unwrap();
         s.update_snapshot(&tab.id, first, |h| h.checks_stopped = true).unwrap();
@@ -818,7 +856,7 @@ mod tests {
     #[test]
     fn a_corrupt_workspace_is_kept_and_its_tabs_show_as_closed() {
         let (dir, s) = store();
-        let a = s.create_tab("w-1", Some("/p".into())).unwrap();
+        let a = s.create_tab("w-1", Some("/p".into()), vec![]).unwrap();
         drop(s);
         std::fs::write(sessions(&dir).join("workspace.json"), "{ not json").unwrap();
         std::fs::write(sessions(&dir).join("workspace.json.bad"), "an older copy").unwrap();
@@ -836,8 +874,8 @@ mod tests {
     #[test]
     fn a_lost_workspace_shows_every_tab_as_closed() {
         let (dir, s) = store();
-        let a = s.create_tab("w-1", None).unwrap();
-        let b = s.create_tab("w-1", None).unwrap();
+        let a = s.create_tab("w-1", None, vec![]).unwrap();
+        let b = s.create_tab("w-1", None, vec![]).unwrap();
         drop(s);
         std::fs::remove_file(sessions(&dir).join("workspace.json")).unwrap();
         let view = at(&dir).window_view("w-1").unwrap();
@@ -852,8 +890,8 @@ mod tests {
     #[test]
     fn a_corrupt_tab_is_kept_and_skipped() {
         let (dir, s) = store();
-        let good = s.create_tab("w-1", None).unwrap();
-        let bad = s.create_tab("w-1", None).unwrap(); // active
+        let good = s.create_tab("w-1", None, vec![]).unwrap();
+        let bad = s.create_tab("w-1", None, vec![]).unwrap(); // active
         drop(s);
         let tabs = sessions(&dir).join("tabs");
         std::fs::write(tabs.join(format!("{}.json", bad.id)), "garbage").unwrap();
@@ -871,9 +909,9 @@ mod tests {
     #[test]
     fn closing_a_listed_tab_whose_file_is_lost_drops_it_from_the_window() {
         let (dir, s) = store();
-        let a = s.create_tab("w-1", None).unwrap();
-        let ghost = s.create_tab("w-1", None).unwrap();
-        let c = s.create_tab("w-1", None).unwrap(); // active
+        let a = s.create_tab("w-1", None, vec![]).unwrap();
+        let ghost = s.create_tab("w-1", None, vec![]).unwrap();
+        let c = s.create_tab("w-1", None, vec![]).unwrap(); // active
         s.activate("w-1", &ghost.id).unwrap();
         drop(s);
         let tabs = sessions(&dir).join("tabs");
@@ -895,7 +933,7 @@ mod tests {
     #[test]
     fn a_tab_file_that_cannot_be_read_is_reported_and_left_alone() {
         let (dir, s) = store();
-        let tab = s.create_tab("w-1", None).unwrap();
+        let tab = s.create_tab("w-1", None, vec![]).unwrap();
         drop(s);
         // A directory where the file should be: reading fails, but not with NotFound.
         let path = sessions(&dir).join(format!("tabs/{}.json", tab.id));
@@ -915,7 +953,7 @@ mod tests {
         let ws = sessions(&dir).join("workspace.json");
         std::fs::create_dir_all(&ws).unwrap();
         assert!(s.window_view("w-1").is_err());
-        assert!(s.create_tab("w-1", None).is_err());
+        assert!(s.create_tab("w-1", None, vec![]).is_err());
         assert!(s.window_ids().is_empty());
         assert!(ws.is_dir(), "nothing was renamed or replaced");
     }
@@ -926,7 +964,7 @@ mod tests {
         std::thread::scope(|scope| {
             for _ in 0..8 {
                 scope.spawn(|| {
-                    s.create_tab("w-1", None).unwrap();
+                    s.create_tab("w-1", None, vec![]).unwrap();
                 });
             }
         });
@@ -936,9 +974,9 @@ mod tests {
     #[test]
     fn closing_a_tab_keeps_it_for_recently_closed() {
         let (_dir, s) = store();
-        let a = s.create_tab("w-1", Some("/a".into())).unwrap();
-        let b = s.create_tab("w-1", None).unwrap();
-        let c = s.create_tab("w-1", None).unwrap();
+        let a = s.create_tab("w-1", Some("/a".into()), vec![]).unwrap();
+        let b = s.create_tab("w-1", None, vec![]).unwrap();
+        let c = s.create_tab("w-1", None, vec![]).unwrap();
         s.activate("w-1", &b.id).unwrap();
         assert_eq!(s.close_tab(&b.id).unwrap().as_deref(), Some("w-1"));
         let view = s.window_view("w-1").unwrap();
@@ -960,8 +998,8 @@ mod tests {
     #[test]
     fn recently_closed_is_newest_first_and_a_half_finished_close_sorts_by_its_last_edit() {
         let (dir, s) = store();
-        let a = s.create_tab("w-1", None).unwrap();
-        let b = s.create_tab("w-1", None).unwrap();
+        let a = s.create_tab("w-1", None, vec![]).unwrap();
+        let b = s.create_tab("w-1", None, vec![]).unwrap();
         s.close_tab(&a.id).unwrap();
         s.close_tab(&b.id).unwrap();
         let closed = s.closed();
@@ -981,7 +1019,7 @@ mod tests {
     #[test]
     fn reopening_puts_a_tab_back_and_refuses_an_open_one() {
         let (_dir, s) = store();
-        let a = s.create_tab("w-1", None).unwrap();
+        let a = s.create_tab("w-1", None, vec![]).unwrap();
         s.close_tab(&a.id).unwrap();
         let w2 = s.add_window().unwrap();
         s.reopen_tab(&a.id, &w2).unwrap();
@@ -1000,7 +1038,7 @@ mod tests {
     #[test]
     fn only_closed_tabs_can_be_deleted() {
         let (dir, s) = store();
-        let a = s.create_tab("w-1", None).unwrap();
+        let a = s.create_tab("w-1", None, vec![]).unwrap();
         assert_eq!(s.delete_tab(&a.id).unwrap_err().to_string(), "Close this tab before deleting it.");
         s.close_tab(&a.id).unwrap();
         s.delete_tab(&a.id).unwrap();
@@ -1013,7 +1051,7 @@ mod tests {
     #[test]
     fn a_closed_tab_still_takes_a_late_draft_save() {
         let (_dir, s) = store();
-        let a = s.create_tab("w-1", None).unwrap();
+        let a = s.create_tab("w-1", None, vec![]).unwrap();
         s.close_tab(&a.id).unwrap();
         s.save_draft(&a.id, "typed just before closing".into()).unwrap();
         assert_eq!(s.tab(&a.id).unwrap().draft, "typed just before closing");
@@ -1024,8 +1062,8 @@ mod tests {
     fn closing_a_window_closes_its_tabs() {
         let (_dir, s) = store();
         let w2 = s.add_window().unwrap();
-        let x = s.create_tab(&w2, Some("/x".into())).unwrap();
-        let y = s.create_tab(&w2, None).unwrap();
+        let x = s.create_tab(&w2, Some("/x".into()), vec![]).unwrap();
+        let y = s.create_tab(&w2, None, vec![]).unwrap();
         assert_eq!(s.close_window(&w2).unwrap(), [x.id.clone(), y.id.clone()]);
         assert_eq!(s.window_ids(), ["w-1"]);
         let closed = s.closed();
@@ -1038,8 +1076,8 @@ mod tests {
     #[test]
     fn moving_a_tab() {
         let (_dir, s) = store();
-        let a = s.create_tab("w-1", None).unwrap();
-        let b = s.create_tab("w-1", None).unwrap(); // active
+        let a = s.create_tab("w-1", None, vec![]).unwrap();
+        let b = s.create_tab("w-1", None, vec![]).unwrap(); // active
         assert_eq!(s.move_tab(&b.id, None).unwrap(), ("w-1".to_owned(), "w-2".to_owned()), "None makes a new window");
         let here = s.window_view("w-1").unwrap();
         assert_eq!(ids(&here.tabs), [a.id.as_str()]);
@@ -1121,11 +1159,11 @@ mod tests {
     #[test]
     fn open_roots_are_the_projects_of_open_tabs() {
         let (_dir, s) = store();
-        s.create_tab("w-1", Some("/a".into())).unwrap();
-        let b = s.create_tab("w-1", Some("/b".into())).unwrap();
-        s.create_tab("w-1", None).unwrap();
+        s.create_tab("w-1", Some("/a".into()), vec![]).unwrap();
+        let b = s.create_tab("w-1", Some("/b".into()), vec![]).unwrap();
+        s.create_tab("w-1", None, vec![]).unwrap();
         let w2 = s.add_window().unwrap();
-        s.create_tab(&w2, Some("/c".into())).unwrap();
+        s.create_tab(&w2, Some("/c".into()), vec![]).unwrap();
         s.close_tab(&b.id).unwrap();
         let mut roots: Vec<String> = s.open_roots().into_iter().collect();
         roots.sort_unstable();
@@ -1146,7 +1184,7 @@ mod tests {
     #[test]
     fn a_run_is_saved_at_done_with_the_checks_that_came_first() {
         let (_dir, s) = store();
-        let tab = s.create_tab("w-1", Some("/p".into())).unwrap();
+        let tab = s.create_tab("w-1", Some("/p".into()), vec![]).unwrap();
         let mut rec = Recorder::new(&s, &tab.id, "the draft", "/p|1|");
         rec.notice("Jev was slow; used keyword order.").unwrap();
         rec.check(&CheckEvent::Checking { count: 2, total: 3 }).unwrap();
@@ -1175,7 +1213,7 @@ mod tests {
     fn checks_cut_off_by_an_edit_stay_short_of_their_total() {
         // The next keystroke aborts the run after done: the snapshot keeps what arrived.
         let (_dir, s) = store();
-        let tab = s.create_tab("w-1", None).unwrap();
+        let tab = s.create_tab("w-1", None, vec![]).unwrap();
         let mut rec = Recorder::new(&s, &tab.id, "d", "|0|");
         rec.check(&CheckEvent::Checking { count: 3, total: 3 }).unwrap();
         rec.done("## Faults\n- a", true).unwrap();
@@ -1189,7 +1227,7 @@ mod tests {
     #[test]
     fn a_run_that_never_reaches_done_saves_nothing() {
         let (_dir, s) = store();
-        let tab = s.create_tab("w-1", None).unwrap();
+        let tab = s.create_tab("w-1", None, vec![]).unwrap();
         let mut rec = Recorder::new(&s, &tab.id, "d", "|0|");
         rec.notice("Jev was slow; used keyword order.").unwrap();
         rec.check(&CheckEvent::Checking { count: 1, total: 1 }).unwrap();

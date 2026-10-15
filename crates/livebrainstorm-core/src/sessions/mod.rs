@@ -44,8 +44,9 @@ pub struct Snapshot {
     /// The claim count from the last `checking` event. Fewer checks than this,
     /// with `checks_stopped` false, means an edit cut the run off.
     pub checks_total: Option<usize>,
-    /// The Faults count from the same event, so restored notes read "2 of 5
-    /// faults checked" as they did live.
+    /// The Conflicts count from the same event, so restored notes read "2 of 5
+    /// conflicts checked" as they did live. The field keeps its old name: it
+    /// is a file and IPC contract.
     pub checks_faults: Option<usize>,
     pub checks_stopped: bool,
 }
@@ -63,6 +64,10 @@ pub struct Tab {
     pub updated_at: u64,
     pub closed_at: Option<u64>,
     pub draft: String,
+    /// The catalogue ids this tab's notes cover (`sections::CATALOGUE`), in
+    /// catalogue order. Empty: the default set, as every tab from before
+    /// this field existed.
+    pub sections: Vec<String>,
     pub next_snapshot: u64,
     /// Newest first, at most `HISTORY_LEN`.
     pub history: Vec<Snapshot>,
@@ -248,6 +253,7 @@ mod tests {
             updated_at: 2,
             closed_at: None,
             draft: "d".into(),
+            sections: vec!["conflicts".into()],
             next_snapshot: 7,
             history: vec![Snapshot {
                 id: 6,
@@ -268,7 +274,7 @@ mod tests {
             json,
             serde_json::json!({
                 "id": "t-1", "root": "/p", "title": null, "createdAt": 1, "updatedAt": 2, "closedAt": null,
-                "draft": "d", "nextSnapshot": 7,
+                "draft": "d", "sections": ["conflicts"], "nextSnapshot": 7,
                 "history": [{
                     "id": 6, "at": 3, "draft": "d", "context": "/p|1|", "markdown": "## Intent", "partial": false,
                     "notices": [],
@@ -287,6 +293,7 @@ mod tests {
     fn a_tab_file_with_missing_fields_still_reads() {
         let tab: Tab = serde_json::from_str(r#"{"id":"t-1","draft":"x"}"#).unwrap();
         assert_eq!((tab.draft.as_str(), tab.next_snapshot, tab.history.len()), ("x", 0, 0));
+        assert!(tab.sections.is_empty(), "a tab from the old build has the default set");
     }
 
     #[test]
