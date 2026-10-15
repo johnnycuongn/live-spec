@@ -49,8 +49,8 @@ const saver = createSaver<string>(
 );
 
 const deps: TabSessionDeps = {
-  analyze: (tabId, draft, previousDraft, instructions, context, onEvent) =>
-    api.analyze(tabId, draft, previousDraft, instructions, context, onEvent),
+  analyze: (tabId, draft, previousDraft, instructions, sections, context, onEvent) =>
+    api.analyze(tabId, draft, previousDraft, instructions, sections, context, onEvent),
   saveDraft: (tabId, draft) => saver.schedule(tabId, draft),
   debounceMs: () => debounce,
   getTab: (tabId) => api.getTab(tabId),
@@ -165,7 +165,10 @@ async function newTab(root: string | null): Promise<void> {
   set({ error: null });
   await saver.flush();
   try {
-    const tab = await api.createTab(state.windowId, root); // appended to the window and made active
+    // A tab opened from the shown tab's project starts with its sections; elsewhere, the default set.
+    const shown = state.activeId !== null ? sessions.get(state.activeId) : undefined;
+    const sections = shown && shown.root === root ? shown.getState().sections : [];
+    const tab = await api.createTab(state.windowId, root, sections); // appended to the window and made active
     show(sessionOf(tab));
     await refresh();
   } catch (e) {
@@ -272,6 +275,17 @@ function setContext(root: string | null, key: string | null, instructions: strin
   for (const s of sessions.values()) if (s.root === root) s.setContext(key, instructions);
 }
 
+/** Saves the tab's section choice, then applies it to its session (which re-runs the shown tab). */
+async function setSections(tabId: string, ids: string[]): Promise<void> {
+  set({ error: null });
+  try {
+    await api.setTabSections(tabId, ids);
+    sessions.get(tabId)?.setSections(ids);
+  } catch (e) {
+    set({ error: errorMessage(e) });
+  }
+}
+
 export const tabs = {
   load,
   switchTo,
@@ -281,6 +295,7 @@ export const tabs = {
   reopen,
   remove,
   rename,
+  setSections,
   next,
   refresh,
   setContext,

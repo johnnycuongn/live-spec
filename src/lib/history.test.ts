@@ -34,8 +34,8 @@ describe("snapshotAnalysis", () => {
     const a = snapshotAnalysis(snap({ checks: [check], checksTotal: 3, checksFaults: 5 }));
     expect(a.checksStopped).toBe(true);
     expect(a.notices).toEqual(["Checks stopped when you edited."]);
-    // Live, 3 of the 5 Faults named code; the saved notes read the same way.
-    expect(checkSummary(a.checking!, a.checks.length, a.checksStopped)).toBe("1 of 5 faults checked");
+    // Live, 3 of the 5 Conflicts named code; the saved notes read the same way.
+    expect(checkSummary(a.checking!, a.checks.length, a.checksStopped)).toBe("1 of 5 conflicts checked");
   });
 
   it("finished or failed checks stay as they were", () => {
@@ -43,7 +43,7 @@ describe("snapshotAnalysis", () => {
     expect(finished.checksStopped).toBe(false);
     expect(finished.notices).toEqual([]);
     // A file saved without checksFaults counts against the claims.
-    expect(checkSummary(finished.checking!, 1, false)).toBe("1 of 1 fault checked");
+    expect(checkSummary(finished.checking!, 1, false)).toBe("1 of 1 conflict checked");
     const failed = snapshotAnalysis(snap({ checksTotal: 2, checksStopped: true, notices: ["Jev is unavailable."] }));
     expect(failed.checksStopped).toBe(true);
     expect(failed.notices).toEqual(["Jev is unavailable."]);

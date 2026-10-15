@@ -88,7 +88,7 @@ describe("checks interrupted by a skipped pause", () => {
     expect(s.status).toBe("done");
     expect(s.notices).toEqual(["Checks stopped when you edited."]);
     expect(s.checksStopped).toBe(true);
-    expect(checkSummary(s.checking!, s.checks.length, s.checksStopped)).toBe("1 of 4 faults checked");
+    expect(checkSummary(s.checking!, s.checks.length, s.checksStopped)).toBe("1 of 4 conflicts checked");
   });
 
   it("finished checks are left alone", () => {
@@ -131,7 +131,7 @@ describe("notices", () => {
   it("a lane notice never marks running checks as stopped", () => {
     const s = run([{ type: "checking", count: 3, total: 3 }, { type: "notice", message: "Couldn't write Questions: busy" }]);
     expect(s.checksStopped).toBe(false);
-    expect(checkSummary(s.checking!, s.checks.length, s.checksStopped)).toBe("Checking 3 of 3 faults…");
+    expect(checkSummary(s.checking!, s.checks.length, s.checksStopped)).toBe("Checking 3 of 3 conflicts…");
   });
 
   it("a failed check stops the checks", () => {

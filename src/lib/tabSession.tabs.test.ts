@@ -30,6 +30,7 @@ const tab = (over: Partial<Tab> = {}): Tab => ({
   updatedAt: 1,
   closedAt: null,
   draft: DRAFT,
+  sections: [],
   nextSnapshot: 2,
   history: [snap()],
   ...over,
@@ -46,7 +47,7 @@ interface Call {
 function harness(t: Tab, getTab?: TabSessionDeps["getTab"], opts?: TabSessionOptions) {
   const calls: Call[] = [];
   const deps: TabSessionDeps = {
-    analyze: (_id, draft, previousDraft, instructions, context, onEvent) => {
+    analyze: (_id, draft, previousDraft, instructions, _sections, context, onEvent) => {
       calls.push({ draft, previousDraft, instructions, context, emit: onEvent });
       return Promise.resolve();
     },

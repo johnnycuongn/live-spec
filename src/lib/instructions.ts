@@ -2,6 +2,7 @@
 // crates/livebrainstorm-core/src/instructions.rs; the cap mirrors
 // MAX_INSTRUCTION_CHARS in prompt.rs.
 import type { ProjectInstructions, Template } from "./ipc";
+import { isDefaultSections } from "./sections";
 
 export const MAX_INSTRUCTION_CHARS = 4000;
 
@@ -21,6 +22,14 @@ export function instructionsLabel(p: ProjectInstructions, templates: Template[])
 /** Changing the instructions re-reads the same draft, like a new project or brief. */
 export const analysisContextKey = (root: string | undefined, briefCreatedAt: number | undefined, instructions: string) =>
   `${root ?? ""}|${briefCreatedAt ?? 0}|${instructions.trim()}`;
+
+/**
+ * A tab's key: its project's key plus its sections, only when they differ
+ * from the default set. So a tab saved by the old build keeps the same key
+ * and relaunching never re-runs it.
+ */
+export const tabContextKey = (projectKey: string, sections: string[]) =>
+  isDefaultSections(sections) ? projectKey : `${projectKey}|${sections.join(",")}`;
 
 /** Characters as the backend counts them (Unicode scalars), not UTF-16 units. */
 export const charCount = (s: string) => [...s].length;

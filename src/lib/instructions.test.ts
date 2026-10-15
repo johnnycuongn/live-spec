@@ -12,6 +12,7 @@ import {
   removeTemplate,
   resetToDefault,
   saveAsDefault,
+  tabContextKey,
   upsertTemplate,
 } from "./instructions";
 
@@ -46,6 +47,14 @@ describe("analysisContextKey", () => {
     expect(analysisContextKey("/p", 2, "Focus on tests.")).not.toBe(key);
     expect(analysisContextKey("/q", 1, "Focus on tests.")).not.toBe(key);
     expect(analysisContextKey(undefined, undefined, "")).toBe("|0|");
+  });
+});
+
+describe("tabContextKey", () => {
+  it("adds nothing for the default set, so tabs from the old build keep their key", () => {
+    expect(tabContextKey("/p|1|", [])).toBe("/p|1|");
+    expect(tabContextKey("/p|1|", ["intent", "conflicts", "gaps", "ambiguities", "questions"])).toBe("/p|1|");
+    expect(tabContextKey("/p|1|", ["conflicts", "questions"])).toBe("/p|1||conflicts,questions");
   });
 });
 

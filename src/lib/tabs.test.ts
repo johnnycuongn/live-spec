@@ -14,6 +14,7 @@ const api = vi.hoisted(() => ({
   importLegacyDrafts: vi.fn(),
   moveTab: vi.fn(),
   analyze: vi.fn(),
+  setTabSections: vi.fn(),
 }));
 vi.mock("./ipc", () => ({
   api,
@@ -31,6 +32,7 @@ const full = (id: string, root: string | null, draft = ""): Tab => ({
   updatedAt: 0,
   closedAt: null,
   draft,
+  sections: [],
   nextSnapshot: 1,
   history: [],
 });
@@ -131,11 +133,12 @@ describe("tabs store", () => {
     await tabs.switchTo("a2");
     sessionFor("a2")!.setDraft("Retry failed checkout payments with backoff");
     await vi.waitFor(() => expect(api.analyze).toHaveBeenCalled());
-    expect(api.analyze.mock.calls[0].slice(0, 5)).toEqual([
+    expect(api.analyze.mock.calls[0].slice(0, 6)).toEqual([
       "a2",
       "Retry failed checkout payments with backoff",
       null,
       "Focus.",
+      [],
       "/a|1|Focus.",
     ]);
   });
@@ -210,6 +213,31 @@ describe("tabs store", () => {
     expect(workspaceState().saveError).toBeNull();
   });
 
+  it("a new tab on the shown tab's project copies its sections; elsewhere it gets the default", async () => {
+    const a1 = full("a1", "/a");
+    a1.sections = ["conflicts", "questions"];
+    const { tabs } = await loadStore(view(stored, a1));
+    api.createTab.mockResolvedValue(full("a3", "/a"));
+    api.listWorkspace.mockResolvedValue(view([...stored, summary("a3", "/a")], full("a3", "/a")));
+    await tabs.newTab("/a");
+    expect(api.createTab).toHaveBeenLastCalledWith("w-1", "/a", ["conflicts", "questions"]);
+    api.createTab.mockResolvedValue(full("b2", "/b"));
+    await tabs.newTab("/b");
+    expect(api.createTab).toHaveBeenLastCalledWith("w-1", "/b", []);
+  });
+
+  it("setSections saves, then tells the session; a failed save changes nothing", async () => {
+    const mod = await loadStore(view(stored, full("a1", "/a")));
+    api.setTabSections.mockResolvedValue(undefined);
+    await mod.tabs.setSections("a1", ["gaps"]);
+    expect(api.setTabSections).toHaveBeenCalledWith("a1", ["gaps"]);
+    expect(mod.sessionFor("a1")?.getState().sections).toEqual(["gaps"]);
+    api.setTabSections.mockRejectedValue(new Error("disk full"));
+    await mod.tabs.setSections("a1", ["intent"]);
+    expect(mod.sessionFor("a1")?.getState().sections).toEqual(["gaps"]);
+    expect(mod.workspaceState().error).toBe("disk full");
+  });
+
   it("a tab moved here from another window is shown", async () => {
     const { tabs, workspaceState } = await loadStore(view(stored, full("a1", "/a")));
     api.listWorkspace.mockResolvedValue(view([...stored, summary("m1", "/m")], full("m1", "/m")));
@@ -231,7 +259,7 @@ describe("first load and context", () => {
     expect(api.analyze).not.toHaveBeenCalled();
     tabs.setContext("/a", "/a|1|Focus.", "Focus.");
     expect(api.analyze).toHaveBeenCalledTimes(1);
-    expect(api.analyze.mock.calls[0].slice(3, 5)).toEqual(["Focus.", "/a|1|Focus."]);
+    expect(api.analyze.mock.calls[0].slice(3, 6)).toEqual(["Focus.", [], "/a|1|Focus."]);
   });
 
   it("a failed first load is retried by the next load()", async () => {

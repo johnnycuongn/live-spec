@@ -4,6 +4,7 @@
 // visible but marked out of date. The pause fires whether or not the tab is
 // shown. Old responses are dropped by request id; the backend also aborts a
 // tab's superseded run (its task slots are keyed by tab id).
+import { tabContextKey } from "./instructions";
 import {
   applyEvent,
   initialAnalysis,
@@ -25,6 +26,7 @@ export interface TabSessionDeps {
     draft: string,
     previousDraft: string | null,
     instructions: string,
+    sections: string[],
     context: string,
     onEvent: (e: UiEvent) => void,
   ) => Promise<void>;
@@ -51,6 +53,8 @@ export interface TabView {
   tooShort: boolean;
   stale: boolean;
   contextDirty: boolean;
+  /** The stored ids; empty is the default set. */
+  sections: string[];
   /** 0 is the live state; k >= 1 is history[k]. */
   viewing: number;
   /** Newest first, at most 5 (sessions::HISTORY_LEN). */
@@ -76,6 +80,10 @@ export class TabSession {
   private historyStale = false;
   private context = "";
   private instructions = "";
+  /** The project's key as the window last handed it over; null until then, or when the project couldn't be read. */
+  private projectKey: string | null = null;
+  /** This tab's section choice (`Tab.sections`); `context` combines it with `projectKey`. */
+  private sections: string[] = [];
   private lastSent = "";
   private lastAnalyzed: Analyzed | null = null;
   private contextDirty = false;
@@ -124,6 +132,8 @@ export class TabSession {
     this.historyRequest++; // ...and so does a history fetch from before it
     const latest = tab.history[0];
     this.draft = tab.draft;
+    this.sections = tab.sections ?? [];
+    this.projectKey = null;
     this.history = tab.history;
     this.historyStale = false;
     this.viewing = 0;
@@ -152,20 +162,48 @@ export class TabSession {
    * means the project couldn't be read: the tab keeps the context its saved
    * notes ran with, so a missing folder never re-runs them, and the next pause
    * still reads the new instructions. With `awaitContext`, a run that came due
-   * before the first call goes out now (on a hidden tab: on activate()).
+   * before the first call goes out now (on a hidden tab: on activate()). The
+   * key handed over is the project's; the tab adds its own sections
+   * (`tabContextKey`).
    */
   setContext(key: string | null, instructions: string): void {
     if (this.disposed) return;
     this.instructions = instructions;
     this.contextReady = true;
+    if (key !== null) this.projectKey = key;
+    const combined = key === null ? null : tabContextKey(key, this.sections);
     const waiting = this.waiting;
     if (waiting && this.active) {
       this.waiting = null;
-      if (key !== null) this.context = key;
+      if (combined !== null) this.context = combined;
       this.run(this.draft, waiting.rerun); // reads the context just set
       return;
     }
-    if (key === null || key === this.context) return;
+    if (combined !== null) this.applyKey(combined);
+  }
+
+  /**
+   * The tab's section choice. A change is a context change: the shown tab
+   * re-reads the draft after a pause with no gate, a hidden one when shown.
+   * Without a project key the key can't move, but the next run still carries
+   * the new sections, so it is scheduled anyway.
+   */
+  setSections(ids: string[]): void {
+    if (this.disposed || (ids.length === this.sections.length && ids.every((id, i) => id === this.sections[i]))) return;
+    this.sections = ids;
+    if (this.projectKey !== null) {
+      this.applyKey(tabContextKey(this.projectKey, ids));
+    } else if (this.active) {
+      this.resetAndSchedule();
+    } else {
+      this.contextDirty = true;
+    }
+    this.emit();
+  }
+
+  /** A combined key. The first one a tab with no saved analysis gets is not a change. */
+  private applyKey(key: string): void {
+    if (key === this.context) return;
     const first = this.context === "";
     this.context = key;
     // A tab with no saved analysis has no context until the window hands it one. That first
@@ -263,7 +301,7 @@ export class TabSession {
     };
     let pending: Promise<void>;
     try {
-      pending = this.deps.analyze(this.id, text, previousDraftFor(this.lastAnalyzed, rerun, ctx), this.instructions, ctx, (ev) => {
+      pending = this.deps.analyze(this.id, text, previousDraftFor(this.lastAnalyzed, rerun, ctx), this.instructions, this.sections, ctx, (ev) => {
         if (!mine()) return;
         this.lastAnalyzed = lastAnalyzedAfter(this.lastAnalyzed, ev, text, ctx);
         if (ev.type === "started") this.viewing = 0; // live streaming always shows the latest
@@ -306,6 +344,7 @@ export class TabSession {
       tooShort: norm.length < MIN_CHARS,
       stale: this.analysis.status !== "idle" && normalize(this.analysis.analyzedDraft) !== norm,
       contextDirty: this.contextDirty,
+      sections: this.sections,
       viewing: this.viewing,
       history: this.history,
       historyStale: this.historyStale,

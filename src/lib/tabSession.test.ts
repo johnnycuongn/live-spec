@@ -29,6 +29,7 @@ const tab = (over: Partial<Tab> = {}): Tab => ({
   updatedAt: 1,
   closedAt: null,
   draft: DRAFT,
+  sections: [],
   nextSnapshot: 2,
   history: [snap()],
   ...over,
@@ -39,6 +40,7 @@ interface Call {
   draft: string;
   previousDraft: string | null;
   instructions: string;
+  sections: string[];
   context: string;
   emit: (e: UiEvent) => void;
 }
@@ -49,8 +51,8 @@ function harness(t: Tab, analyze?: TabSessionDeps["analyze"]) {
   const deps: TabSessionDeps = {
     analyze:
       analyze ??
-      ((tabId, draft, previousDraft, instructions, context, onEvent) => {
-        calls.push({ tabId, draft, previousDraft, instructions, context, emit: onEvent });
+      ((tabId, draft, previousDraft, instructions, sections, context, onEvent) => {
+        calls.push({ tabId, draft, previousDraft, instructions, sections, context, emit: onEvent });
         return Promise.resolve();
       }),
     saveDraft,
@@ -76,7 +78,7 @@ describe("the pause", () => {
     expect(calls).toEqual([]);
     vi.advanceTimersByTime(1);
     expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ tabId: "t-1", draft: DRAFT, previousDraft: null, instructions: "Focus on retries.", context: "/p|1|" });
+    expect(calls[0]).toMatchObject({ tabId: "t-1", draft: DRAFT, previousDraft: null, instructions: "Focus on retries.", sections: [], context: "/p|1|" });
     expect(s.getState().analysis.status).toBe("thinking");
   });
 
@@ -227,5 +229,84 @@ describe("runs", () => {
     stop();
     s.setDraft("ab");
     expect(heard).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("sections", () => {
+  it("a run carries the tab's stored sections", () => {
+    const { s, calls } = harness(tab({ draft: "", history: [], sections: ["conflicts", "questions"] }));
+    s.setContext("/p|1|", "");
+    s.setDraft(DRAFT);
+    vi.advanceTimersByTime(1000);
+    expect(calls[0]).toMatchObject({ sections: ["conflicts", "questions"], context: "/p|1||conflicts,questions" });
+    expect(s.getState().sections).toEqual(["conflicts", "questions"]);
+  });
+
+  it("changing the sections re-reads the same draft past the gate, with the new key", () => {
+    const { s, calls } = harness(tab());
+    s.setContext("/p|1|", "");
+    expect(calls).toEqual([]); // the saved notes match the draft
+    s.setSections(["gaps"]);
+    vi.advanceTimersByTime(1000);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ draft: DRAFT, previousDraft: null, sections: ["gaps"], context: "/p|1||gaps" });
+    expect(s.getState().sections).toEqual(["gaps"]);
+  });
+
+  it("back to the default set re-runs with the bare project key", () => {
+    const { s, calls } = harness(tab({ sections: ["gaps"], history: [snap({ context: "/p|1||gaps" })] }));
+    s.setContext("/p|1|", "");
+    expect(calls).toEqual([]); // the saved notes ran with these sections
+    s.setSections([]);
+    vi.advanceTimersByTime(1000);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].context).toBe("/p|1|");
+  });
+
+  it("the same sections again change nothing", () => {
+    const { s, calls } = harness(tab({ sections: ["gaps"], history: [snap({ context: "/p|1||gaps" })] }));
+    s.setContext("/p|1|", "");
+    s.setSections(["gaps"]);
+    vi.advanceTimersByTime(1000);
+    expect(calls).toEqual([]);
+  });
+
+  it("on a hidden tab the change waits until the tab is shown", () => {
+    const { s, calls } = harness(tab());
+    s.setContext("/p|1|", "");
+    s.deactivate();
+    s.setSections(["gaps"]);
+    vi.advanceTimersByTime(1000);
+    expect(calls).toEqual([]);
+    expect(s.getState().contextDirty).toBe(true);
+    s.activate();
+    vi.advanceTimersByTime(1000);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].context).toBe("/p|1||gaps");
+  });
+
+  it("setSections during a run supersedes it", () => {
+    const { s, calls } = harness(tab({ draft: "", history: [] }));
+    s.setContext("/p|1|", "");
+    s.setDraft(DRAFT);
+    vi.advanceTimersByTime(1000);
+    expect(s.getState().analysis.status).toBe("thinking");
+    s.setSections(["gaps"]);
+    vi.advanceTimersByTime(1000);
+    expect(calls).toHaveLength(2);
+    calls[0].emit({ type: "text", text: "## Intent\n- stale", lane: 0 });
+    expect(s.getState().analysis.markdown).toBe(""); // the first run's events are dropped
+    calls[1].emit({ type: "started" });
+    calls[1].emit({ type: "text", text: "## Gaps\n- g", lane: 0 });
+    expect(s.getState().analysis.markdown).toBe("## Gaps\n- g");
+  });
+
+  it("without a project key (the folder couldn't be read) a change still re-runs with the new sections", () => {
+    const { s, calls } = harness(tab());
+    s.setContext(null, "");
+    s.setSections(["gaps"]);
+    vi.advanceTimersByTime(1000);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ sections: ["gaps"], context: "/p|1|" });
   });
 });

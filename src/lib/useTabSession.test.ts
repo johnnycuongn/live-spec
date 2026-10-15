@@ -13,6 +13,7 @@ const tab: Tab = {
   updatedAt: 1,
   closedAt: null,
   draft: "an idea about retries",
+  sections: [],
   nextSnapshot: 1,
   history: [],
 };
