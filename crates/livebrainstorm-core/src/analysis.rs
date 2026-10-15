@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 use crate::jev::{gate, rerank, Jev};
 use crate::project::{retrieve, shortlist, ProjectIndex, Snippet};
+use crate::sections::SectionSpec;
 use crate::{prompt, Error};
 
 /// Gate and rerank share this deadline. Jev answers in about 0.3 s, and the
@@ -88,23 +89,23 @@ pub async fn pre_phase(input: PreInput<'_>, budget: Duration) -> PreOutcome {
 /// Sections that a lane failed to write, or left out, become one notice
 /// naming every missing section; only if nothing survived is the first
 /// failure returned as an error.
-pub fn merge_lanes(groups: &[Vec<&str>], results: Vec<crate::Result<String>>) -> crate::Result<(String, Option<String>)> {
+pub fn merge_lanes(groups: &[Vec<&SectionSpec>], results: Vec<crate::Result<String>>) -> crate::Result<(String, Option<String>)> {
     let (mut parts, mut missing, mut first_error) = (Vec::new(), Vec::new(), None);
     for (sections, result) in groups.iter().zip(results) {
         let text = match result {
             Ok(text) => text,
             Err(e) => {
-                missing.extend(sections.iter().copied());
+                missing.extend(sections.iter().map(|s| s.heading));
                 first_error.get_or_insert(e);
                 continue;
             }
         };
-        for name in sections {
-            match prompt::section_body(&text, name).filter(|body| !body.is_empty()) {
-                Some(body) => parts.push(format!("## {name}\n{body}")),
+        for s in sections {
+            match prompt::section_body(&text, s.id).filter(|body| !body.is_empty()) {
+                Some(body) => parts.push(format!("## {}\n{body}", s.heading)),
                 None => {
-                    missing.push(*name);
-                    first_error.get_or_insert_with(|| Error::Provider(format!("the reply had no {name} section")));
+                    missing.push(s.heading);
+                    first_error.get_or_insert_with(|| Error::Provider(format!("the reply had no {} section", s.heading)));
                 }
             }
         }
@@ -228,49 +229,53 @@ mod tests {
         assert_eq!(hits.load(Ordering::SeqCst), 0);
     }
 
+    fn pick(ids: &[&str]) -> Vec<&'static SectionSpec> {
+        ids.iter().map(|id| crate::sections::find(id).expect("catalogue id")).collect()
+    }
+
     #[test]
     fn lanes_join_in_lane_order() {
-        let groups = vec![vec!["Intent", "Faults"], vec!["Directions", "Questions"]];
-        let merged = merge_lanes(&groups, vec![Ok("## Intent\n- i\n## Faults\n- f\n".into()), Ok("## Directions\n- d\n## Questions\n- q".into())]);
+        let groups = vec![pick(&["intent", "conflicts"]), pick(&["gaps", "questions"])];
+        let merged = merge_lanes(&groups, vec![Ok("## Intent\n- i\n## Conflicts\n- f\n".into()), Ok("## Gaps\n- d\n## Questions\n- q".into())]);
         let (text, notices) = merged.unwrap();
-        assert_eq!(text, "## Intent\n- i\n## Faults\n- f\n## Directions\n- d\n## Questions\n- q");
+        assert_eq!(text, "## Intent\n- i\n## Conflicts\n- f\n## Gaps\n- d\n## Questions\n- q");
         assert_eq!(notices, None);
     }
 
     #[test]
     fn failed_lanes_become_one_notice_naming_every_missing_section() {
-        let groups = vec![vec!["Intent"], vec!["Faults"], vec!["Directions"], vec!["Questions"]];
+        let groups = vec![pick(&["intent"]), pick(&["conflicts"]), pick(&["gaps"]), pick(&["questions"])];
         let results = vec![
             Ok("## Intent\n- i".into()),
-            Ok("## Faults\n- f".into()),
+            Ok("## Conflicts\n- f".into()),
             Err(Error::Provider("rate limited".into())),
             Err(Error::Provider("rate limited again".into())),
         ];
         let (text, notice) = merge_lanes(&groups, results).unwrap();
-        assert_eq!(text, "## Intent\n- i\n## Faults\n- f");
-        assert_eq!(notice.as_deref(), Some("Couldn't write Directions and Questions: rate limited"));
+        assert_eq!(text, "## Intent\n- i\n## Conflicts\n- f");
+        assert_eq!(notice.as_deref(), Some("Couldn't write Gaps and Questions: rate limited"));
     }
 
     #[test]
     fn a_lane_keeps_only_its_own_sections() {
-        let groups = vec![vec!["Intent"], vec!["Faults"]];
-        let results = vec![Ok("## Intent\n- i\n## Faults\n- spurious".into()), Ok("Here you go:\n## Faults\n- f".into())];
+        let groups = vec![pick(&["intent"]), pick(&["conflicts"])];
+        let results = vec![Ok("## Intent\n- i\n## Conflicts\n- spurious".into()), Ok("Here you go:\n## Conflicts\n- f".into())];
         let (text, notice) = merge_lanes(&groups, results).unwrap();
-        assert_eq!(text, "## Intent\n- i\n## Faults\n- f");
+        assert_eq!(text, "## Intent\n- i\n## Conflicts\n- f");
         assert_eq!(notice, None);
     }
 
     #[test]
     fn a_lane_without_its_heading_counts_as_failed() {
-        let groups = vec![vec!["Intent"], vec!["Faults"]];
-        let (text, notice) = merge_lanes(&groups, vec![Ok("## Intent\n- i".into()), Ok("- a fault with no heading".into())]).unwrap();
+        let groups = vec![pick(&["intent"]), pick(&["conflicts"])];
+        let (text, notice) = merge_lanes(&groups, vec![Ok("## Intent\n- i".into()), Ok("- a conflict with no heading".into())]).unwrap();
         assert_eq!(text, "## Intent\n- i");
-        assert_eq!(notice.as_deref(), Some("Couldn't write Faults: the reply had no Faults section"));
+        assert_eq!(notice.as_deref(), Some("Couldn't write Conflicts: the reply had no Conflicts section"));
     }
 
     #[test]
     fn every_lane_failing_is_an_error() {
-        let groups = vec![vec!["Intent"], vec!["Faults"]];
+        let groups = vec![pick(&["intent"]), pick(&["conflicts"])];
         let err = merge_lanes(&groups, vec![Err(Error::Provider("first".into())), Err(Error::Provider("second".into()))]).unwrap_err();
         assert_eq!(err.to_string(), "first");
     }
