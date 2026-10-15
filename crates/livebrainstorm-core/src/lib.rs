@@ -13,6 +13,7 @@ pub mod jev;
 pub mod llm;
 pub mod local;
 pub mod menu;
+pub mod migrate;
 pub mod project;
 pub mod prompt;
 pub mod sections;
