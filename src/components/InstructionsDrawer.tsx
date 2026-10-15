@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import type { ProjectInstructions, Template } from "../lib/ipc";
 import { applyTemplate, charCount, clearInstructions, counterText, firstLine, resetToDefault, saveAsDefault } from "../lib/instructions";
-import { Button, Field, cx, inputClass } from "./ui";
+import { Button, Field, Select, cx, inputClass } from "./ui";
 
 interface Props {
   instructions: ProjectInstructions;
@@ -59,13 +59,12 @@ export function InstructionsDrawer(p: Props) {
         {p.templates.length > 0 && (
           <div className="flex items-end gap-2">
             <Field label="Template">
-              <select className={inputClass} value={pickedId} onChange={(e) => setPicked(e.target.value)}>
-                {p.templates.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.name}
-                  </option>
-                ))}
-              </select>
+              <Select
+                label="Template"
+                value={pickedId}
+                options={p.templates.map((t) => ({ value: t.id, label: t.name }))}
+                onChange={setPicked}
+              />
             </Field>
             <Button className="shrink-0" onClick={apply}>
               Apply

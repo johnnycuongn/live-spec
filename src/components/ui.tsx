@@ -1,5 +1,7 @@
 // Shared building blocks, so components don't repeat long class lists.
-import { useEffect, useRef, type ButtonHTMLAttributes, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ButtonHTMLAttributes, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { moveActive, typeahead } from "../lib/listbox";
 
 export const cx = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" ");
 
@@ -179,5 +181,241 @@ export function Menu({ at, items, label, onClose }: { at: { x: number; y: number
         </button>
       ))}
     </div>
+  );
+}
+
+export interface SelectOption<T extends string> {
+  value: T;
+  label: string;
+}
+
+/** Where the open list sits: under the trigger, or above it when there's more room there. */
+interface Placement {
+  left: number;
+  width: number;
+  top?: number;
+  bottom?: number;
+  maxHeight: number;
+}
+
+const LIST_MAX = 288;
+
+function place(trigger: HTMLElement): Placement {
+  const r = trigger.getBoundingClientRect();
+  const below = window.innerHeight - r.bottom - 8;
+  const above = r.top - 8;
+  const up = below < 160 && above > below;
+  const left = Math.max(4, Math.min(r.left, window.innerWidth - r.width - 4));
+  return up
+    ? { left, width: r.width, bottom: window.innerHeight - r.top + 4, maxHeight: Math.min(LIST_MAX, above) }
+    : { left, width: r.width, top: r.bottom + 4, maxHeight: Math.min(LIST_MAX, below) };
+}
+
+/**
+ * A dropdown that looks like the rest of the app instead of the system's.
+ * A select-only combobox (WAI-ARIA APG): focus stays on the trigger, arrows,
+ * Home/End and type-ahead move through the list, Enter or Space picks, Tab
+ * picks and moves on, Esc closes without reaching the drawers or the
+ * Settings dialog. The list is portalled into the enclosing <dialog> (else
+ * <body>) so a modal dialog doesn't make it inert and a wrapping <label>
+ * doesn't swallow its clicks.
+ */
+export function Select<T extends string>(props: {
+  value: T;
+  options: SelectOption<T>[];
+  onChange: (value: T) => void;
+  /** Names the list for screen readers; the trigger takes its name from the surrounding Field. */
+  label: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const { value, options, onChange } = props;
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [at, setAt] = useState<{ place: Placement; host: Element } | null>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const typed = useRef({ text: "", at: 0 });
+  const id = useId();
+  const selected = Math.max(0, options.findIndex((o) => o.value === value));
+  const current = options.find((o) => o.value === value);
+
+  const show = (index = selected) => {
+    if (!trigger.current) return;
+    setAt({ place: place(trigger.current), host: trigger.current.closest("dialog") ?? document.body });
+    setActive(index);
+    setOpen(true);
+  };
+  const choose = (index: number) => {
+    setOpen(false);
+    const o = options[index];
+    if (o && o.value !== value) onChange(o.value);
+  };
+
+  // Close on a press elsewhere, the window losing focus, a resize, or a scroll that would leave the list behind.
+  useEffect(() => {
+    if (!open) return;
+    const outside = (e: MouseEvent) => {
+      const t = e.target as Node;
+      // The trigger and its Field label toggle the list in the trigger's own click handler.
+      const owner = trigger.current?.closest("label") ?? trigger.current;
+      if (!owner?.contains(t) && !list.current?.contains(t)) setOpen(false);
+    };
+    const scrolled = (e: Event) => {
+      if (!list.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const dismiss = () => setOpen(false);
+    window.addEventListener("mousedown", outside);
+    window.addEventListener("scroll", scrolled, true);
+    window.addEventListener("blur", dismiss);
+    window.addEventListener("resize", dismiss);
+    return () => {
+      window.removeEventListener("mousedown", outside);
+      window.removeEventListener("scroll", scrolled, true);
+      window.removeEventListener("blur", dismiss);
+      window.removeEventListener("resize", dismiss);
+    };
+  }, [open]);
+
+  // Keep the active option in view. Not scrollIntoView, which can also scroll the dialog behind the list.
+  useLayoutEffect(() => {
+    const box = list.current;
+    const el = box?.querySelector<HTMLElement>(`[data-index="${active}"]`);
+    if (!open || !box || !el) return;
+    if (el.offsetTop < box.scrollTop) box.scrollTop = el.offsetTop - 4;
+    else if (el.offsetTop + el.offsetHeight > box.scrollTop + box.clientHeight)
+      box.scrollTop = el.offsetTop + el.offsetHeight - box.clientHeight + 4;
+  }, [open, active]);
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const now = Date.now();
+    const typing = typed.current.text !== "" && now - typed.current.at < 600;
+    // Type-ahead; a space continues a label ("Extra high") only mid-word.
+    if (e.key.length === 1 && (e.key !== " " || typing)) {
+      e.preventDefault();
+      const text = (typing ? typed.current.text : "") + e.key;
+      typed.current = { text, at: now };
+      const hit = typeahead(
+        options.map((o) => o.label),
+        text,
+        open ? active : selected,
+      );
+      if (hit !== null) open ? setActive(hit) : show(hit);
+      return;
+    }
+    typed.current.text = "";
+    if (!open) {
+      if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+        e.preventDefault();
+        show();
+      } else if (e.key === "Home" || e.key === "End") {
+        e.preventDefault();
+        show(e.key === "Home" ? 0 : options.length - 1);
+      }
+    } else if (e.key === "Escape") {
+      // preventDefault keeps the Settings dialog open; stopPropagation keeps App's drawer handler out of it.
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      choose(active);
+    } else if (e.key === "Tab") {
+      choose(active);
+    } else {
+      const next = moveActive(e.key, active, options.length);
+      if (next !== null) {
+        e.preventDefault();
+        setActive(next);
+      }
+    }
+  };
+
+  return (
+    <>
+      <button
+        ref={trigger}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? `${id}-list` : undefined}
+        aria-activedescendant={open ? `${id}-${active}` : undefined}
+        disabled={props.disabled}
+        onClick={() => (open ? setOpen(false) : show())}
+        onKeyDown={onKeyDown}
+        className={cx(
+          "group flex w-full cursor-pointer items-center gap-2 rounded-md border bg-page py-1.5 pr-2 pl-2.5 text-left text-[13px] text-ink transition-colors",
+          "hover:border-faint disabled:cursor-default disabled:opacity-50 disabled:hover:border-line",
+          open ? "border-accent" : "border-line",
+          props.className,
+        )}
+      >
+        <span className="min-w-0 flex-1 truncate">{current?.label ?? ""}</span>
+        <svg
+          viewBox="0 0 16 16"
+          className={cx("size-3.5 shrink-0 transition-colors", open ? "text-accent" : "text-faint group-hover:text-muted")}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden
+        >
+          <path d="M5 6.5 8 3.5l3 3M5 9.5l3 3 3-3" />
+        </svg>
+      </button>
+      {open &&
+        at &&
+        createPortal(
+          <div
+            ref={list}
+            id={`${id}-list`}
+            role="listbox"
+            aria-label={props.label}
+            style={at.place}
+            // Keep focus on the trigger, which owns the keyboard.
+            onMouseDown={(e) => e.preventDefault()}
+            className={cx(
+              "fixed z-50 grid content-start gap-0.5 overflow-y-auto overscroll-contain rounded-md border border-line bg-page p-1 text-ink shadow-[0_8px_24px_rgb(0_0_0/0.12)]",
+              "animate-pop motion-reduce:animate-none",
+              at.place.bottom !== undefined && "origin-bottom",
+            )}
+          >
+            {options.map((o, i) => (
+              <div
+                key={o.value}
+                id={`${id}-${i}`}
+                data-index={i}
+                role="option"
+                aria-selected={i === selected}
+                onMouseMove={() => i !== active && setActive(i)}
+                onClick={() => choose(i)}
+                className={cx(
+                  "flex cursor-pointer items-center gap-2 rounded px-2.5 py-1.5 text-[13px]",
+                  i === active && "bg-subtle",
+                  i === selected && "font-medium",
+                )}
+              >
+                <span className="min-w-0 flex-1 truncate">{o.label}</span>
+                <svg
+                  viewBox="0 0 16 16"
+                  className={cx("size-3.5 shrink-0 text-accent", i !== selected && "invisible")}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.75"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden
+                >
+                  <path d="m3.5 8.5 3 3 6-7" />
+                </svg>
+              </div>
+            ))}
+          </div>,
+          at.host,
+        )}
+    </>
   );
 }

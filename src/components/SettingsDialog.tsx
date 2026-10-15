@@ -13,7 +13,7 @@ import {
 import { formatBytes, pauseDownload, startDownload, useDownloads } from "../lib/downloads";
 import { agentHint, clampAgents, clampedAgents, jevHint, jevUsable, keySourceLabel, PARALLEL_BRIEF_HINT, PARALLEL_NOTES_HINT } from "../lib/settingsHints";
 import { CLAUDE_ALIASES, EFFORT_OPTIONS, checkModels, isCustomModel } from "../lib/providerOptions";
-import { Button, Eyebrow, Field, Toggle, cx, inputClass } from "./ui";
+import { Button, Eyebrow, Field, Select, Toggle, cx, inputClass } from "./ui";
 
 interface Props {
   settings: Settings;
@@ -209,27 +209,26 @@ function ClaudeCliFields({ p, patch }: { p: Extract<ProviderSettings, { kind: "c
   );
 }
 
+const MODEL_OPTIONS = [
+  ...CLAUDE_ALIASES.map((o) => ({ value: o, label: o[0].toUpperCase() + o.slice(1) })),
+  { value: "custom", label: "Custom…" },
+];
+const EFFORT_SELECT = EFFORT_OPTIONS.map((o) => ({ value: o.value ?? "", label: o.label }));
+
 /** An alias, or "Custom…" with a text field for a full model id. */
 function ModelPicker(props: { label: string; value: string; onChange: (v: string) => void }) {
   const [custom, setCustom] = useState(isCustomModel(props.value));
   return (
     <Field label={props.label}>
-      <select
-        className={inputClass}
+      <Select
+        label={props.label}
         value={custom ? "custom" : props.value}
-        onChange={(e) => {
-          const v = e.target.value;
+        options={MODEL_OPTIONS}
+        onChange={(v) => {
           setCustom(v === "custom");
           props.onChange(v === "custom" ? "" : v);
         }}
-      >
-        {CLAUDE_ALIASES.map((o) => (
-          <option key={o} value={o}>
-            {o[0].toUpperCase() + o.slice(1)}
-          </option>
-        ))}
-        <option value="custom">Custom…</option>
-      </select>
+      />
       {custom && (
         <input
           className={inputClass}
@@ -246,13 +245,12 @@ function ModelPicker(props: { label: string; value: string; onChange: (v: string
 function EffortSelect(props: { label: string; value: Effort | null; onChange: (v: Effort | null) => void }) {
   return (
     <Field label={props.label}>
-      <select className={inputClass} value={props.value ?? ""} onChange={(e) => props.onChange((e.target.value || null) as Effort | null)}>
-        {EFFORT_OPTIONS.map((o) => (
-          <option key={o.label} value={o.value ?? ""}>
-            {o.label}
-          </option>
-        ))}
-      </select>
+      <Select
+        label={props.label}
+        value={props.value ?? ""}
+        options={EFFORT_SELECT}
+        onChange={(v) => props.onChange((v || null) as Effort | null)}
+      />
     </Field>
   );
 }
