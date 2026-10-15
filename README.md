@@ -34,6 +34,11 @@
   <a href="ARCHITECTURE.md">Architecture</a>
 </p>
 
+<p align="center">
+  <img src="docs/screenshots/notes.png" width="900" alt="Live Spec: a spec on the left, and on the right the notes Live Spec wrote about it, flagging three conflicts with the project's code, the gaps and the ambiguities">
+</p>
+<p align="center"><sub>Real notes from Live Spec (Claude Code, haiku) on a spec for this repo: it catches that the spec reverses the stateless design and stores per-tab data in the wrong place.</sub></p>
+
 ---
 
 ## Why Live Spec
@@ -75,6 +80,12 @@ The notes come in up to five sections. Each tab picks the ones it needs:
 - **Optional fact-check.** With a [TypeSafe](https://typesafe.ai) key, every Conflict is checked against the code.
 - **Usage you can see.** Tokens and estimated cost per day, project and kind.
 - **Offline-friendly and private by design.** API keys live in the OS keychain, opened projects can't run hooks or MCP servers, and the Local option sends nothing anywhere.
+- **Light and dark.** Follows your system appearance.
+
+<p align="center">
+  <img src="docs/screenshots/instructions-dark.png" width="900" alt="Live Spec in dark mode with the Session instructions drawer open, showing the Feature spec template applied and the five starter templates">
+</p>
+<p align="center"><sub>Session instructions in dark mode: the Feature spec template steers what the notes look for in this project.</sub></p>
 
 ## Install
 
