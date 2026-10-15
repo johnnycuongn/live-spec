@@ -14,6 +14,9 @@ interface Props {
   onRetry: () => void;
   onChange: (next: ProjectInstructions) => void;
   onClose: () => void;
+  /** The shown tab's section choice (stored ids; empty is the default set) and how to change it. */
+  sections: string[];
+  onSections: (ids: string[]) => void;
   /** The templates section (TemplateList). */
   children?: ReactNode;
 }
@@ -21,7 +24,7 @@ interface Props {
 /** Same shell as BriefDrawer. App keys it by project root, so Undo never crosses projects. */
 export function InstructionsDrawer(p: Props) {
   const [picked, setPicked] = useState("");
-  const [undo, setUndo] = useState<ProjectInstructions | null>(null);
+  const [undo, setUndo] = useState<{ instructions: ProjectInstructions; sections: string[] } | null>(null);
   const i = p.instructions;
   const pickedId = p.templates.some((t) => t.id === picked) ? picked : (p.templates[0]?.id ?? "");
   const counter = counterText(charCount(i.current));
@@ -33,9 +36,10 @@ export function InstructionsDrawer(p: Props) {
   const apply = () => {
     const t = p.templates.find((x) => x.id === pickedId);
     if (!t) return;
-    const { next, undo } = applyTemplate(i, t);
-    p.onChange(next);
-    setUndo(undo);
+    const applied = applyTemplate(i, t, p.sections);
+    p.onChange(applied.next);
+    if (applied.sections !== p.sections) p.onSections(applied.sections);
+    setUndo(applied.undo);
   };
 
   return (
@@ -52,7 +56,7 @@ export function InstructionsDrawer(p: Props) {
       </header>
 
       <div className="grid min-h-0 flex-1 content-start gap-5 overflow-y-auto px-6 pt-4 pb-10">
-        <p className="text-xs text-muted">These steer the notes for this project: what LiveBrainstorm looks for, not the four sections.</p>
+        <p className="text-xs text-muted">These steer the notes for this project: what Live Spec looks for. Which sections appear is chosen per tab, above the notes.</p>
 
         {/* Disabled until this project's instructions load: typing earlier would save over the stored ones. */}
         <fieldset disabled={!p.loaded} className="contents">
@@ -77,7 +81,8 @@ export function InstructionsDrawer(p: Props) {
             <Button
               variant="link"
               onClick={() => {
-                p.onChange(undo);
+                p.onChange(undo.instructions);
+                if (undo.sections !== p.sections) p.onSections(undo.sections);
                 setUndo(null);
               }}
             >
@@ -90,7 +95,7 @@ export function InstructionsDrawer(p: Props) {
           <textarea
             className={cx(inputClass, "min-h-48 resize-y leading-relaxed")}
             value={i.current}
-            placeholder="For example: focus Faults on error handling and race conditions."
+            placeholder="For example: focus Conflicts on error handling and race conditions."
             onChange={(e) => change({ ...i, current: e.target.value })}
           />
           <small className={cx("text-xs tabular-nums", counter.over ? "text-fault" : "text-faint")}>{counter.text}</small>

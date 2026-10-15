@@ -39,6 +39,8 @@ describe("the catalogue", () => {
     expect(toggleSection(["gaps"], "gaps")).toEqual(["gaps"]);
     expect(toggleSection(["gaps"], "gaps", true)).toEqual([]); // a template may leave the tab's sections alone
     expect(toggleSection([], "gaps")).toEqual(["intent", "conflicts", "ambiguities", "questions"]); // empty means the default set
+    expect(toggleSection([], "gaps", true)).toEqual(["gaps"]); // a template's empty list is literally empty: ticking one box picks just it
+    expect(toggleSection(["gaps"], "intent", true)).toEqual(["intent", "gaps"]);
   });
 
   it("writes the empty-state sentence from the chosen titles", () => {

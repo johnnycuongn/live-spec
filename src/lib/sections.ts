@@ -38,11 +38,12 @@ export const isDefaultSections = (ids: string[]): boolean =>
   ids.length === 0 || (ids.length === DEFAULT_SECTIONS.length && ids.every((id, i) => id === DEFAULT_SECTIONS[i]));
 
 /**
- * Adds or removes `key`. A tab keeps at least one section (the last one stays);
- * `allowEmpty` is for templates, where an empty list means "leave the tab's sections alone".
+ * Adds or removes `key`. A tab keeps at least one section (the last one stays),
+ * and its empty list is the default set. `allowEmpty` is for templates: their
+ * list is taken literally, and empty means "leave the tab's sections alone".
  */
 export function toggleSection(chosen: string[], key: string, allowEmpty = false): string[] {
-  const current = effectiveSections(chosen);
+  const current = allowEmpty ? chosen : effectiveSections(chosen);
   if (current.includes(key)) {
     const next = current.filter((k) => k !== key);
     return next.length === 0 && !allowEmpty ? current : next;

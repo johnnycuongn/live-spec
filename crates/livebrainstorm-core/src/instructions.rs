@@ -16,6 +16,11 @@ pub struct Template {
     pub id: String,
     pub name: String,
     pub text: String,
+    /// The sections to switch the shown tab to when applied (catalogue ids,
+    /// catalogue order). Empty: leave the tab's sections as they are, as every
+    /// template from before this field existed does.
+    #[serde(default)]
+    pub sections: Vec<String>,
 }
 
 /// One project's instructions. `current` steers the notes; `default` is what
@@ -52,52 +57,61 @@ pub struct InstructionsView {
 }
 
 /// The templates a new install starts with, and what "Restore starter
-/// templates" brings back. Each steers within the four sections and the rules.
-const STARTERS: [(&str, &str, &str); 5] = [
+/// templates" brings back. Each steers within its sections and the rules.
+const STARTERS: [(&str, &str, &[&str], &str); 5] = [
     (
-        "feature-design",
-        "Feature design",
-        "I'm designing a new feature.
-- Faults: look for features or code that already do part of this, integration points I haven't mentioned, and data or state the feature needs that the project doesn't have yet.
-- Directions: favour the smallest version that would prove the idea works.
-- Questions: ask about scope, who the feature is for, and what success looks like.",
+        "feature-spec",
+        "Feature spec",
+        &["intent", "conflicts", "gaps", "ambiguities", "questions"],
+        "I'm writing a spec for a new feature that an AI agent will implement.
+- Conflicts: features or code that already do part of this, integration points the spec skips, and data or state the project doesn't have yet.
+- Gaps: acceptance criteria an agent could turn into tests, and non-goals.
+- Questions: who this is for and what done looks like.",
     ),
     (
-        "bug-hunt",
-        "Bug hunt",
-        "I'm investigating a bug. Treat my draft as a hypothesis, not a fact.
-- Faults: point to code paths that explain or contradict the symptoms I describe, especially error handling, concurrency, caching, and state that outlives a request.
-- Directions: suggest the cheapest experiment, log line, or test that would confirm or rule out each cause.
-- Questions: ask for the evidence that would narrow it down fastest.",
+        "bugfix-spec",
+        "Bug fix spec",
+        &["intent", "conflicts", "gaps", "questions"],
+        "This spec describes a bug and its fix. Treat the described cause as a hypothesis.
+- Conflicts: code paths that contradict the described cause or the described current behaviour.
+- Gaps: current behaviour, expected behaviour, what must not change, and the test that proves the fix.
+- Questions: the evidence that would confirm or rule out the cause.",
     ),
     (
-        "refactor",
-        "Refactor or architecture",
-        "I'm planning a refactor or an architectural change.
-- Faults: name the callers, contracts, and invariants the change would break, including anything the project's docs say to preserve.
-- Directions: propose an order of steps that keeps the code working after each one.
-- Questions: ask what must not change, and how we'd know nothing regressed.",
+        "refactor-spec",
+        "Refactor spec",
+        &["conflicts", "gaps", "ambiguities", "questions"],
+        "This spec describes a refactor or an architectural change.
+- Conflicts: callers, contracts and invariants the change would break, including anything the project's docs say to preserve.
+- Gaps: an order of steps that keeps the code working after each one, and how we'd know nothing regressed.
+- Questions: what must not change.",
     ),
     (
-        "product-ux",
-        "Product and UX",
-        "I'm thinking about the user's experience, not the implementation.
-- Faults: point out confusing states, missing feedback, empty and error states, and accessibility gaps in what I describe.
-- Directions: suggest changes to what the user sees and does. Mention code only to say what exists today.
-- Questions: ask who the user is and what they're trying to get done.",
+        "handoff",
+        "Hand-off pass",
+        &["gaps", "ambiguities"],
+        "This spec is nearly ready to hand to an agent. Hunt for anything it would have to guess: vague verbs, unnamed files, \"etc.\", implied defaults, missing error cases. Flag what it needs to start without asking.",
     ),
     (
         "devils-advocate",
         "Devil's advocate",
+        &["conflicts", "questions"],
         "Be a skeptical reviewer.
-- Faults: give the strongest objection to the plan rather than a list of small issues.
-- Directions: include one alternative that rejects the premise of my draft.
+- Conflicts: give the strongest objection to the plan rather than a list of small issues.
 - Questions: ask what evidence would change my mind.",
     ),
 ];
 
 pub fn starters() -> Vec<Template> {
-    STARTERS.iter().map(|(id, name, text)| Template { id: (*id).into(), name: (*name).into(), text: (*text).into() }).collect()
+    STARTERS
+        .iter()
+        .map(|(id, name, sections, text)| Template {
+            id: (*id).into(),
+            name: (*name).into(),
+            text: (*text).into(),
+            sections: sections.iter().map(|s| (*s).to_owned()).collect(),
+        })
+        .collect()
 }
 
 pub struct InstructionStore {
@@ -204,7 +218,7 @@ mod tests {
         let (_dir, store) = store();
         let view = store.view("/p");
         let ids: Vec<_> = view.templates.iter().map(|t| t.id.as_str()).collect();
-        assert_eq!(ids, ["feature-design", "bug-hunt", "refactor", "product-ux", "devils-advocate"]);
+        assert_eq!(ids, ["feature-spec", "bugfix-spec", "refactor-spec", "handoff", "devils-advocate"]);
         assert_eq!(view.project, ProjectInstructions::default());
     }
 
@@ -265,7 +279,7 @@ mod tests {
         let restored = store.restore_starters().unwrap();
         assert_eq!(restored.len(), 5);
         assert_eq!(restored[0], edited, "an edited starter keeps its edits and its place");
-        assert_eq!(restored.iter().filter(|t| t.id == "bug-hunt").count(), 1);
+        assert_eq!(restored.iter().filter(|t| t.id == "bugfix-spec").count(), 1);
         assert_eq!(store.load().templates, restored);
     }
 
@@ -296,6 +310,25 @@ mod tests {
             }
         });
         assert_eq!(store.load().projects.len(), 8);
+    }
+
+    #[test]
+    fn starters_pick_catalogue_sections_per_the_spec() {
+        let by_id = |id: &str| starters().into_iter().find(|t| t.id == id).map(|t| t.sections).unwrap();
+        assert_eq!(by_id("feature-spec"), ["intent", "conflicts", "gaps", "ambiguities", "questions"]);
+        assert_eq!(by_id("bugfix-spec"), ["intent", "conflicts", "gaps", "questions"]);
+        assert_eq!(by_id("refactor-spec"), ["conflicts", "gaps", "ambiguities", "questions"]);
+        assert_eq!(by_id("handoff"), ["gaps", "ambiguities"], "stored in catalogue order");
+        assert_eq!(by_id("devils-advocate"), ["conflicts", "questions"]);
+        for t in starters() {
+            assert_eq!(crate::sections::normalize(&t.sections), t.sections, "{}: catalogue ids in catalogue order", t.id);
+        }
+    }
+
+    #[test]
+    fn a_template_without_sections_leaves_the_tabs_alone() {
+        let t: Template = serde_json::from_str(r#"{"id":"mine","name":"Mine","text":"x"}"#).unwrap();
+        assert!(t.sections.is_empty());
     }
 
     #[test]

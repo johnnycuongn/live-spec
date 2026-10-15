@@ -76,6 +76,8 @@ export interface Template {
   id: string;
   name: string;
   text: string;
+  /** Catalogue ids; empty leaves the tab's sections alone. */
+  sections: string[];
 }
 
 /** One project's instructions (`instructions::ProjectInstructions`). */

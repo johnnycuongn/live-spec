@@ -1,18 +1,21 @@
 import { useState } from "react";
 import type { Template } from "../lib/ipc";
 import { removeTemplate, upsertTemplate } from "../lib/instructions";
+import { CATALOGUE, effectiveSections, toggleSection } from "../lib/sections";
 import { Button, Eyebrow, Field, cx, inputClass } from "./ui";
 
 interface Props {
   templates: Template[];
   /** The current instructions: a new template starts from them. */
   current: string;
+  /** The shown tab's sections: a new template starts from them. */
+  sections: string[];
   onSave: (next: Template[]) => void;
   onRestore: () => void;
 }
 
 /** Add, edit, delete and restore templates. Confirmations are inline, never browser dialogs. */
-export function TemplateList({ templates, current, onSave, onRestore }: Props) {
+export function TemplateList({ templates, current, sections, onSave, onRestore }: Props) {
   const [editing, setEditing] = useState<Template | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const isNew = editing !== null && !templates.some((t) => t.id === editing.id);
@@ -30,7 +33,7 @@ export function TemplateList({ templates, current, onSave, onRestore }: Props) {
         <h3>
           <Eyebrow>Templates</Eyebrow>
         </h3>
-        <Button variant="ghost" onClick={() => setEditing({ id: crypto.randomUUID(), name: "", text: current })} disabled={editing !== null}>
+        <Button variant="ghost" onClick={() => setEditing({ id: crypto.randomUUID(), name: "", text: current, sections: effectiveSections(sections) })} disabled={editing !== null}>
           + New template
         </Button>
       </div>
@@ -91,6 +94,21 @@ function TemplateEditor(props: { value: Template; onChange: (t: Template) => voi
           onChange={(e) => props.onChange({ ...v, text: e.target.value })}
         />
       </Field>
+      <fieldset className="grid gap-1 text-xs text-muted">
+        <legend className="mb-1">Sections</legend>
+        {CATALOGUE.map((s) => (
+          <label key={s.key} className="flex items-center gap-2 text-[13px] text-ink">
+            <input
+              type="checkbox"
+              className="accent-accent"
+              checked={v.sections.includes(s.key)}
+              onChange={() => props.onChange({ ...v, sections: toggleSection(v.sections, s.key, true) })}
+            />
+            {s.title}
+          </label>
+        ))}
+        {v.sections.length === 0 && <small>None picked: applying this template leaves the tab's sections as they are.</small>}
+      </fieldset>
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={props.onCancel}>
           Cancel

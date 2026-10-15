@@ -132,7 +132,7 @@ describe("instructions refetched while typing", () => {
     const { projects, projectsState } = await fresh();
     api.projectSummary.mockResolvedValue(summary("/p", 1));
     api.getInstructions.mockResolvedValueOnce(instructionsView("")).mockResolvedValueOnce({
-      templates: [{ id: "t", name: "T", text: "new template" }],
+      templates: [{ id: "t", name: "T", text: "new template", sections: [] }],
       project: { default: "", current: "from the other window", templateId: null },
     });
     projects.ensure("/p");
@@ -145,12 +145,12 @@ describe("instructions refetched while typing", () => {
     const typed = { default: "", current: "typed meanwhile", templateId: null };
     projects.changeInstructions("/p", typed);
     fetched.resolve({
-      templates: [{ id: "t", name: "T", text: "new template" }],
+      templates: [{ id: "t", name: "T", text: "new template", sections: [] }],
       project: { default: "", current: "from the other window", templateId: null },
     });
     await reloading;
     expect(projectsState().instructions["/p"]).toEqual(typed);
-    expect(projectsState().templates).toEqual([{ id: "t", name: "T", text: "new template" }]); // templates still apply
+    expect(projectsState().templates).toEqual([{ id: "t", name: "T", text: "new template", sections: [] }]); // templates still apply
     await projects.flush();
     expect(api.saveProjectInstructions).toHaveBeenLastCalledWith("/p", typed);
   });
@@ -273,12 +273,12 @@ describe("load failures and ordering", () => {
     projects.changeInstructions("/p", typed);
     await vi.waitFor(() => expect(projectsState().instructions["/p"]).toEqual(typed));
     api.getInstructions.mockResolvedValue({
-      templates: [{ id: "t", name: "T", text: "tt" }],
+      templates: [{ id: "t", name: "T", text: "tt", sections: [] }],
       project: { default: "", current: "older stored copy", templateId: null },
     });
     await projects.reloadInstructions("/p");
     expect(projectsState().instructions["/p"]).toEqual(typed); // the typed copy is the only one with the edit
-    expect(projectsState().templates).toEqual([{ id: "t", name: "T", text: "tt" }]);
+    expect(projectsState().templates).toEqual([{ id: "t", name: "T", text: "tt", sections: [] }]);
   });
 
   it("a refetch started before a local template edit doesn't put the old templates back", async () => {
@@ -292,9 +292,9 @@ describe("load failures and ordering", () => {
     api.getInstructions.mockReturnValue(fetched.promise);
     const reloading = projects.reloadInstructions("/p");
     await settle();
-    const mine = [{ id: "m", name: "Mine", text: "edited meanwhile" }];
+    const mine = [{ id: "m", name: "Mine", text: "edited meanwhile", sections: [] }];
     await projects.changeTemplates(mine);
-    fetched.resolve({ templates: [{ id: "o", name: "Old", text: "old" }], project: { default: "", current: "other", templateId: null } });
+    fetched.resolve({ templates: [{ id: "o", name: "Old", text: "old", sections: [] }], project: { default: "", current: "other", templateId: null } });
     await reloading;
     expect(projectsState().templates).toEqual(mine);
     expect(projectsState().instructions["/p"].current).toBe("other"); // instructions were not typed: still applied

@@ -2,7 +2,7 @@
 // crates/livebrainstorm-core/src/instructions.rs; the cap mirrors
 // MAX_INSTRUCTION_CHARS in prompt.rs.
 import type { ProjectInstructions, Template } from "./ipc";
-import { isDefaultSections } from "./sections";
+import { isDefaultSections, normalizeSections } from "./sections";
 
 export const MAX_INSTRUCTION_CHARS = 4000;
 
@@ -44,9 +44,20 @@ export function counterText(length: number): { text: string; over: boolean } {
 
 export const firstLine = (text: string) => text.trim().split("\n")[0];
 
-/** Applying replaces the current text; `undo` is exactly what was there. */
-export function applyTemplate(p: ProjectInstructions, t: Template): { next: ProjectInstructions; undo: ProjectInstructions } {
-  return { next: { ...p, current: t.text, templateId: t.id }, undo: p };
+export interface AppliedTemplate {
+  next: ProjectInstructions;
+  /** The shown tab's sections after applying: the template's, or unchanged when it has none. */
+  sections: string[];
+  undo: { instructions: ProjectInstructions; sections: string[] };
+}
+
+/** Applying replaces the current text and, when the template has sections, the shown tab's sections; `undo` is exactly what was there. */
+export function applyTemplate(p: ProjectInstructions, t: Template, current: string[]): AppliedTemplate {
+  return {
+    next: { ...p, current: t.text, templateId: t.id },
+    sections: t.sections.length > 0 ? normalizeSections(t.sections) : current,
+    undo: { instructions: p, sections: current },
+  };
 }
 
 export const clearInstructions = (p: ProjectInstructions): ProjectInstructions => ({ ...p, current: "", templateId: null });

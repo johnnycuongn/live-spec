@@ -16,7 +16,7 @@ import {
   upsertTemplate,
 } from "./instructions";
 
-const t = (id: string, name: string, text: string): Template => ({ id, name, text });
+const t = (id: string, name: string, text: string, sections: string[] = []): Template => ({ id, name, text, sections });
 const bug = t("bug-hunt", "Bug hunt", "Treat my draft as a hypothesis.");
 const feat = t("feature-design", "Feature design", "I'm designing a new feature.");
 const p = (fields: Partial<ProjectInstructions>): ProjectInstructions => ({ ...EMPTY_INSTRUCTIONS, ...fields });
@@ -59,11 +59,14 @@ describe("tabContextKey", () => {
 });
 
 describe("actions", () => {
-  it("apply replaces the text and keeps what was there for undo", () => {
+  it("apply replaces the text, switches the tab's sections when the template has some, and keeps both for undo", () => {
     const before = p({ current: "mine", default: "d" });
-    const { next, undo } = applyTemplate(before, bug);
-    expect(next).toEqual({ default: "d", current: bug.text, templateId: "bug-hunt" });
-    expect(undo).toBe(before);
+    const plain = applyTemplate(before, bug, ["gaps"]);
+    expect(plain.next).toEqual({ default: "d", current: bug.text, templateId: "bug-hunt" });
+    expect(plain.sections).toEqual(["gaps"]); // a template without sections leaves the tab's alone
+    expect(plain.undo).toEqual({ instructions: before, sections: ["gaps"] });
+    const handoff = t("handoff", "Hand-off pass", "Hunt.", ["ambiguities", "gaps"]);
+    expect(applyTemplate(before, handoff, ["gaps"]).sections).toEqual(["gaps", "ambiguities"]); // normalized to catalogue order
   });
 
   it("clear, reset to default, save as default", () => {

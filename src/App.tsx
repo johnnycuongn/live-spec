@@ -305,7 +305,7 @@ export default function App() {
             onClose={() => setBriefRoot(null)}
           />
         )}
-        {showInstructions && session && (
+        {showInstructions && session && view && (
           <InstructionsDrawer
             key={root ?? ""}
             instructions={instructions}
@@ -315,11 +315,14 @@ export default function App() {
             error={pj.instructionsErrors[root ?? ""] ?? pj.templatesError}
             onRetry={() => projects.ensure(root)}
             onChange={(next) => projects.changeInstructions(root, next)}
+            sections={view.sections}
+            onSections={(ids) => void tabs.setSections(session.id, ids)}
             onClose={() => setShowInstructions(false)}
           >
             <TemplateList
               templates={pj.templates}
               current={instructions.current}
+              sections={view.sections}
               onSave={(next) => void projects.changeTemplates(next)}
               onRestore={() => void projects.restoreStarters()}
             />
