@@ -121,7 +121,7 @@ export interface Snapshot {
   checks: CheckResult[];
   /** The claim count from the last `checking` event. Fewer checks, without `checksStopped`, means an edit cut the run off. */
   checksTotal: number | null;
-  /** The Faults count from the same event (`total`); null in files saved before it existed. */
+  /** The Conflicts count from the same event (`total`); null in files saved before it existed. The field keeps its old name. */
   checksFaults: number | null;
   checksStopped: boolean;
 }
@@ -135,6 +135,8 @@ export interface Tab {
   updatedAt: number;
   closedAt: number | null;
   draft: string;
+  /** Catalogue ids in catalogue order; empty means the default set. */
+  sections: string[];
   nextSnapshot: number;
   history: Snapshot[];
 }
@@ -245,15 +247,17 @@ export const api = {
     draft: string,
     previousDraft: string | null,
     instructions: string,
+    sections: string[],
     context: string,
     onEvent: (e: UiEvent) => void,
-  ) => stream("analyze", { tabId, draft, previousDraft, instructions, context }, onEvent),
+  ) => stream("analyze", { tabId, draft, previousDraft, instructions, sections, context }, onEvent),
   cancelAnalysis: (tabId: string) => invoke<void>("cancel_analysis", { tabId }),
   usageReport: (sinceHour: number) => invoke<UsageBucket[]>("usage_report", { sinceHour }),
 
   listWorkspace: (window: string) => invoke<WindowView>("list_workspace", { window }),
   getTab: (tabId: string) => invoke<Tab>("get_tab", { tabId }),
-  createTab: (window: string, root: string | null) => invoke<Tab>("create_tab", { window, root }),
+  createTab: (window: string, root: string | null, sections: string[]) => invoke<Tab>("create_tab", { window, root, sections }),
+  setTabSections: (tabId: string, sections: string[]) => invoke<void>("set_tab_sections", { tabId, sections }),
   saveDraft: (tabId: string, draft: string) => invoke<void>("save_draft", { tabId, draft }),
   renameTab: (tabId: string, title: string | null) => invoke<void>("rename_tab", { tabId, title }),
   activateTab: (window: string, tabId: string) => invoke<void>("activate_tab", { window, tabId }),

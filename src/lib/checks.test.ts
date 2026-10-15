@@ -3,16 +3,16 @@ import { checkLocation, checkSummary, plainClaim } from "./checks";
 
 describe("checkSummary", () => {
   it("counts down while verdicts arrive", () => {
-    expect(checkSummary({ count: 2, total: 3 }, 1, false)).toBe("Checking 2 of 3 faults…");
-    expect(checkSummary({ count: 2, total: 3 }, 2, false)).toBe("2 of 3 faults checked");
+    expect(checkSummary({ count: 2, total: 3 }, 1, false)).toBe("Checking 2 of 3 conflicts…");
+    expect(checkSummary({ count: 2, total: 3 }, 2, false)).toBe("2 of 3 conflicts checked");
   });
 
   it("stops claiming progress after a failure", () => {
-    expect(checkSummary({ count: 2, total: 3 }, 1, true)).toBe("1 of 3 faults checked");
+    expect(checkSummary({ count: 2, total: 3 }, 1, true)).toBe("1 of 3 conflicts checked");
   });
 
-  it("uses the singular for one fault", () => {
-    expect(checkSummary({ count: 1, total: 1 }, 1, false)).toBe("1 of 1 fault checked");
+  it("uses the singular for one conflict", () => {
+    expect(checkSummary({ count: 1, total: 1 }, 1, false)).toBe("1 of 1 conflict checked");
   });
 });
 

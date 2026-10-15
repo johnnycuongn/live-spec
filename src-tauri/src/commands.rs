@@ -18,7 +18,7 @@ use livebrainstorm_core::project::{self, BriefStatus, StoredBrief};
 use livebrainstorm_core::sessions::{valid_id, LegacyDraft, Recorder, Tab, WindowSummary, WindowView};
 use livebrainstorm_core::settings::{ProviderSettings, Settings, Tier};
 use livebrainstorm_core::usage::{self, UsageBucket, UsageKind, UsageTag};
-use livebrainstorm_core::{prompt, Error, Result};
+use livebrainstorm_core::{prompt, sections, Error, Result};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tokio::sync::oneshot;
@@ -39,7 +39,7 @@ pub enum UiEvent {
     Done { text: String, partial: bool },
     Error { message: String },
     Progress { downloaded: u64, total: Option<u64> },
-    /// `count` of the `total` Faults name code that's being checked.
+    /// `count` of the `total` Conflicts name code that's being checked.
     Checking { count: usize, total: usize },
     Check(CheckResult),
     /// Non-fatal: the notes are fine, something around them failed.
@@ -352,10 +352,11 @@ pub fn get_tab(state: State<'_, AppState>, tab_id: String) -> Result<Tab> {
     state.sessions.tab(&tab_id)
 }
 
+/// `sections`: the new tab's section choice (the shown tab's, when it is on the same project).
 #[tauri::command]
-pub fn create_tab(app: AppHandle, window: String, root: Option<String>) -> Result<Tab> {
+pub fn create_tab(app: AppHandle, window: String, root: Option<String>, sections: Vec<String>) -> Result<Tab> {
     check_id(&window)?;
-    let tab = app.state::<AppState>().sessions.create_tab(&window, root)?;
+    let tab = app.state::<AppState>().sessions.create_tab(&window, root, sections)?;
     events::workspace_changed(&app, vec![window]);
     Ok(tab)
 }
@@ -381,6 +382,14 @@ pub fn rename_tab(app: AppHandle, tab_id: String, title: Option<String>) -> Resu
     state.sessions.rename_tab(&tab_id, title)?;
     events::workspace_changed(&app, state.sessions.window_of(&tab_id).into_iter().collect());
     Ok(())
+}
+
+/// The tab's section choice. No `workspace-changed`: a tab belongs to one window and
+/// lists don't show sections; the window that changed it updates its own view.
+#[tauri::command]
+pub fn set_tab_sections(state: State<'_, AppState>, tab_id: String, sections: Vec<String>) -> Result<()> {
+    check_id(&tab_id)?;
+    state.sessions.set_sections(&tab_id, sections)
 }
 
 #[tauri::command]
@@ -529,6 +538,8 @@ fn note(ch: &Channel<UiEvent>, recorder: &Mutex<Recorder<'_>>, message: String) 
 /// One run for one tab. A new run for a tab aborts only that tab's previous
 /// run, so tabs analyse in parallel. The notes are saved to the tab's history
 /// before `done` is sent, so a `get_tab` right after `done` includes them.
+/// Each argument is a named field of the webview's IPC call, hence more than clippy's seven.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub async fn analyze(
     app: AppHandle,
@@ -536,6 +547,7 @@ pub async fn analyze(
     draft: String,
     previous_draft: Option<String>,
     instructions: String,
+    sections: Vec<String>,
     context: String,
     on_event: Channel<UiEvent>,
 ) -> Result<()> {
@@ -596,13 +608,14 @@ pub async fn analyze(
         // pre-phase), so a keystroke during the Jev gate records nothing.
         let ledger = state.usage.clone();
         let tag = UsageTag { root: root.clone(), kind: UsageKind::Notes };
-        let groups = prompt::section_groups(settings.effective_note_agents());
-        let (faults_tx, faults_rx) = oneshot::channel::<String>();
-        let mut faults_tx = Some(faults_tx);
+        let chosen = sections::resolve(&sections); // unknown or stale ids fall back to the default set
+        let groups = prompt::section_groups(settings.effective_note_agents(), &chosen);
+        let (conflicts_tx, conflicts_rx) = oneshot::channel::<String>();
+        let mut conflicts_tx = Some(conflicts_tx);
         let mut lanes = Vec::new();
-        for (lane, sections) in groups.iter().enumerate() {
-            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, sections, &instructions);
-            let tx = if sections.contains(&"Faults") { faults_tx.take() } else { None };
+        for (lane, lane_sections) in groups.iter().enumerate() {
+            let req = prompt::analysis_request(&draft, index.as_deref(), brief.as_deref(), &snippets, &provider, lane_sections, &instructions);
+            let tx = if lane_sections.iter().any(|s| s.checkable) { conflicts_tx.take() } else { None };
             let (provider, on_event) = (&provider, &on_event);
             let (ledger, tag) = (ledger.clone(), tag.clone());
             lanes.push(async move {
@@ -618,7 +631,7 @@ pub async fn analyze(
                 result
             });
         }
-        drop(faults_tx);
+        drop(conflicts_tx); // with Conflicts unselected the check below ends at once
 
         let write = async {
             match analysis::merge_lanes(&groups, agents::run_limited(groups.len(), lanes).await) {
@@ -637,17 +650,17 @@ pub async fn analyze(
                 Err(e) => send(&on_event, UiEvent::Error { message: e.to_string() }),
             }
         };
-        // "Checked in code" starts as soon as the Faults lane finishes, while
+        // "Checked in code" starts as soon as the Conflicts lane finishes, while
         // other lanes may still stream; `done` never waits for it. The next
         // analysis of this tab aborts this task, lanes and checks included.
         let check = async {
-            let Ok(text) = faults_rx.await else { return }; // that lane failed
+            let Ok(text) = conflicts_rx.await else { return }; // that lane failed, or Conflicts isn't chosen
             if !settings.jev_check_enabled() {
                 return;
             }
             let (Some(index), Some(jev)) = (index.as_deref(), jev.as_ref()) else { return };
-            if let Some(faults) = prompt::section_body(&text, "Faults") {
-                check::run(jev, index, &faults, |ev| {
+            if let Some(conflicts) = prompt::section_body(&text, "conflicts") {
+                check::run(jev, index, &conflicts, |ev| {
                     let _ = recorder.lock().expect("recorder lock").check(&ev); // saving never fails a run
                     send(&on_event, ev.into());
                 })

@@ -85,6 +85,7 @@ pub fn run() {
             commands::create_tab,
             commands::save_draft,
             commands::rename_tab,
+            commands::set_tab_sections,
             commands::activate_tab,
             commands::close_tab,
             commands::reopen_tab,

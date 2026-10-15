@@ -489,7 +489,7 @@ function JevFields({ settings, update }: { settings: Settings; update: (j: Parti
       </Field>
       <Toggle label="Skip re-analysis when an edit doesn't change the idea" checked={j.gate && usable} disabled={!usable} onChange={(gate) => update({ gate })} />
       <Toggle label="Let Jev pick the code the notes see" checked={j.rerank && usable} disabled={!usable} onChange={(rerank) => update({ rerank })} />
-      <Toggle label="Check notes against the code" checked={j.check && usable} disabled={!usable} onChange={(check) => update({ check })} />
+      <Toggle label="Check Conflicts against the code" checked={j.check && usable} disabled={!usable} onChange={(check) => update({ check })} />
       <p className="text-xs text-muted">{jevHint(source, kind)}</p>
     </div>
   );
