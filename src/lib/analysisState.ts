@@ -1,6 +1,6 @@
 // Pure state transitions for the live analysis, testable without React.
 // Check events may arrive before or after `done`: the fact-check starts when
-// the Faults lane finishes, independently of the other lanes.
+// the Conflicts lane finishes, independently of the other lanes.
 import type { CheckResult, UiEvent } from "./ipc";
 import { appendLane, joinLanes } from "./lanes";
 
