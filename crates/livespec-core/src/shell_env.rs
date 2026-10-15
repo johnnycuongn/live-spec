@@ -22,7 +22,7 @@ fn read_login_shell_path() -> Option<String> {
     use std::sync::mpsc;
     use std::time::Duration;
 
-    const MARK: &str = "__LIVEBRAINSTORM_PATH__";
+    const MARK: &str = "__LIVESPEC_PATH__";
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {

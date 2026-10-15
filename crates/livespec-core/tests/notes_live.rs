@@ -1,14 +1,14 @@
 //! Runs Claude Code for real (uses the subscription): times complete notes
 //! for this repo with 1 lane and with 4 lanes, alternating, twice each.
-//!   cargo test -p livebrainstorm-core --test notes_live -- --ignored --nocapture
+//!   cargo test -p livespec-core --test notes_live -- --ignored --nocapture
 
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use livebrainstorm_core::llm::{Chunk, ClaudeCli, Provider};
-use livebrainstorm_core::project::{retrieve, scan};
-use livebrainstorm_core::{agents, analysis, prompt, shell_env};
+use livespec_core::llm::{Chunk, ClaudeCli, Provider};
+use livespec_core::project::{retrieve, scan};
+use livespec_core::{agents, analysis, prompt, shell_env};
 
 #[tokio::test]
 #[ignore = "runs Claude Code and uses the subscription"]

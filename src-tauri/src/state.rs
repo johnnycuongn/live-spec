@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, RwLock};
 
-use livebrainstorm_core::instructions::InstructionStore;
-use livebrainstorm_core::local::{LocalPaths, LocalServer};
-use livebrainstorm_core::project::{BriefStore, ProjectIndex, StoredBrief};
-use livebrainstorm_core::sessions::SessionStore;
-use livebrainstorm_core::settings::Settings;
-use livebrainstorm_core::usage::UsageLedger;
+use livespec_core::instructions::InstructionStore;
+use livespec_core::local::{LocalPaths, LocalServer};
+use livespec_core::project::{BriefStore, ProjectIndex, StoredBrief};
+use livespec_core::sessions::SessionStore;
+use livespec_core::settings::Settings;
+use livespec_core::usage::UsageLedger;
 use tauri::async_runtime::JoinHandle;
 
 /// One loaded project: its index (which keeps file contents) and its cached brief.

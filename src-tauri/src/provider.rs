@@ -2,12 +2,12 @@
 
 use std::path::PathBuf;
 
-use livebrainstorm_core::jev::Jev;
-use livebrainstorm_core::llm::{AnthropicApi, ClaudeCli, OpenAiCompat, Provider, Secret};
-use livebrainstorm_core::local::catalog;
-use livebrainstorm_core::local::LocalServer;
-use livebrainstorm_core::settings::{ClaudeAuth, ProviderSettings, Tier};
-use livebrainstorm_core::{shell_env, Error, Result};
+use livespec_core::jev::Jev;
+use livespec_core::llm::{AnthropicApi, ClaudeCli, OpenAiCompat, Provider, Secret};
+use livespec_core::local::catalog;
+use livespec_core::local::LocalServer;
+use livespec_core::settings::{ClaudeAuth, ProviderSettings, Tier};
+use livespec_core::{shell_env, Error, Result};
 use tauri::{AppHandle, Manager};
 
 use crate::secrets;

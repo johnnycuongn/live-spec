@@ -2,7 +2,7 @@
 //! `tauri-plugin-window-state` (which keys on labels) restores its position and size,
 //! and the capability glob `"windows": ["w-*"]` gives it IPC.
 
-use livebrainstorm_core::{Error, Result};
+use livespec_core::{Error, Result};
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, Window, WindowEvent};
 
 use crate::events;
@@ -13,7 +13,7 @@ use crate::state::{cancel_task, AppState};
 /// handler deadlocks (WebView2).
 pub fn build(app: &AppHandle, id: &str) -> Result<WebviewWindow> {
     WebviewWindowBuilder::new(app, id, WebviewUrl::App("index.html".into()))
-        .title("LiveBrainstorm")
+        .title("Live Spec")
         .inner_size(1280.0, 820.0)
         .min_inner_size(860.0, 560.0)
         .build()
@@ -42,6 +42,6 @@ fn close_requested(app: &AppHandle, id: &str) {
         }
         Ok(None) => {}
         // The window still closes; its tabs stay listed and come back at the next launch.
-        Err(e) => eprintln!("LiveBrainstorm: couldn't move window {id}'s tabs to Recently closed: {e}"),
+        Err(e) => eprintln!("Live Spec: couldn't move window {id}'s tabs to Recently closed: {e}"),
     }
 }

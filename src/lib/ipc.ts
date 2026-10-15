@@ -1,5 +1,5 @@
 // Typed bridge to the Rust commands. Shapes mirror the serde types in
-// src-tauri/src/commands.rs and crates/livebrainstorm-core; keep them in sync.
+// src-tauri/src/commands.rs and crates/livespec-core; keep them in sync.
 import { Channel, invoke } from "@tauri-apps/api/core";
 
 export type Verdict = "confirmed" | "contradicted" | "unclear" | "notShown" | "notFound";

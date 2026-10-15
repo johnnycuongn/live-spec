@@ -57,7 +57,7 @@ impl SessionStore {
         match self.read_ws(&mut inner) {
             Ok(ws) => ws.windows.into_iter().map(|w| w.id).collect(),
             Err(e) => {
-                eprintln!("LiveBrainstorm: couldn't read the saved windows: {e}");
+                eprintln!("Live Spec: couldn't read the saved windows: {e}");
                 Vec::new()
             }
         }
@@ -284,7 +284,7 @@ impl SessionStore {
             tab.closed_at = Some(now);
             if let Err(e) = self.put_tab(inner, tab) {
                 // Still closed (no window lists it); it sorts by its last edit.
-                eprintln!("LiveBrainstorm: couldn't mark tab {id} closed: {e}");
+                eprintln!("Live Spec: couldn't mark tab {id} closed: {e}");
             }
         }
         Ok(Some(entry.tabs))
@@ -494,7 +494,7 @@ impl SessionStore {
                 inner.unreadable.push(kept.display().to_string());
                 let ws = Workspace::first();
                 if let Err(e) = write_json(&path, &ws) {
-                    eprintln!("LiveBrainstorm: couldn't save a new workspace: {e}");
+                    eprintln!("Live Spec: couldn't save a new workspace: {e}");
                 }
                 ws
             }
@@ -535,7 +535,7 @@ impl SessionStore {
     /// For lists: a tab that can't be read is left out, never fatal to the list.
     fn read_tab_logged(&self, inner: &mut Inner, id: &str) -> Option<Tab> {
         self.read_tab(inner, id).unwrap_or_else(|e| {
-            eprintln!("LiveBrainstorm: couldn't read tab {id}: {e}");
+            eprintln!("Live Spec: couldn't read tab {id}: {e}");
             None
         })
     }

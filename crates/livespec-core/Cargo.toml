@@ -1,8 +1,8 @@
 [package]
-name = "livebrainstorm-core"
+name = "livespec-core"
 version = "0.1.0"
 edition = "2021"
-description = "Project understanding, prompting and LLM providers for LiveBrainstorm (no Tauri dependency)"
+description = "Project understanding, prompting and LLM providers for Live Spec (no Tauri dependency)"
 
 [dependencies]
 serde = { workspace = true }

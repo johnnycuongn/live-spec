@@ -1,4 +1,4 @@
-//! LiveBrainstorm core: everything that doesn't need Tauri.
+//! Live Spec core: everything that doesn't need Tauri.
 //!
 //! Keeping this crate UI-agnostic means the expensive logic (project indexing,
 //! retrieval, prompting, provider streaming, local runtime management) is

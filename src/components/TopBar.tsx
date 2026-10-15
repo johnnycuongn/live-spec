@@ -51,7 +51,7 @@ export function TopBar(p: Props) {
         </svg>
       </Button>
       <span className="mr-1 text-[15px] font-semibold tracking-tight" aria-hidden>
-        LiveBrainstorm
+        Live Spec
       </span>
 
       {t && (

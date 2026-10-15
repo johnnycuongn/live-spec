@@ -81,7 +81,7 @@ export function afterClose(order: string[], closing: string): string | null {
 export const rowTitle = (t: Pick<TabSummary, "title" | "firstLine">, liveDraft: string | null) =>
   tabTitle({ title: t.title, firstLine: liveDraft === null ? t.firstLine : firstLine(liveDraft) });
 
-export const windowTitle = (title: string | null) => (title === null ? "LiveBrainstorm" : `LiveBrainstorm — ${title}`);
+export const windowTitle = (title: string | null) => (title === null ? "Live Spec" : `Live Spec — ${title}`);
 
 /**
  * What a rename commits: a trimmed title, null for the automatic title, or
@@ -104,7 +104,7 @@ export function unreadableNotice(path: string): string {
 
 type FlagStore = Pick<Storage, "getItem" | "setItem">;
 
-export const sidebarKey = (windowId: string) => `livebrainstorm.sidebar.${windowId}`;
+export const sidebarKey = (windowId: string) => `livespec.sidebar.${windowId}`;
 
 /** localStorage, or undefined where touching it throws (private mode, blocked site data). */
 function browserStorage(): FlagStore | undefined {

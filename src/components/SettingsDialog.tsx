@@ -87,14 +87,14 @@ export function SettingsDialog({ settings, onSave, onClose }: Props) {
           Settings
         </h2>
 
-        <Group title="Where LiveBrainstorm thinks">
+        <Group title="Where Live Spec thinks">
           <fieldset className="grid grid-cols-3 gap-2">
             <legend className="sr-only">Model provider</legend>
             <ProviderOption checked={p.kind === "claudeCli"} onSelect={() => choose("claudeCli")} title="Claude subscription">
               Runs your installed Claude Code and its existing login. Meant for your own use on this machine.
             </ProviderOption>
             <ProviderOption checked={p.kind === "anthropicApi"} onSelect={() => choose("anthropicApi")} title="Anthropic API key">
-              Pay per use with your own key. The right choice if you share LiveBrainstorm with others.
+              Pay per use with your own key. The right choice if you share Live Spec with others.
             </ProviderOption>
             <ProviderOption checked={p.kind === "local"} onSelect={() => choose("local")} title="Local model">
               Runs fully on this computer. Private and offline, but less sharp.
@@ -115,7 +115,7 @@ export function SettingsDialog({ settings, onSave, onClose }: Props) {
         </Group>
 
         <Group title="Timing">
-          <Field label={`Pause before LiveBrainstorm replies: ${(draft.debounceMs / 1000).toFixed(1)} s`}>
+          <Field label={`Pause before Live Spec replies: ${(draft.debounceMs / 1000).toFixed(1)} s`}>
             <input
               type="range"
               className="w-full accent-accent"
@@ -363,7 +363,7 @@ function LocalFields({ modelId, onPick }: { modelId: string; onPick: (id: string
           />
         </div>
       ))}
-      <p className="text-xs text-muted">LiveBrainstorm starts the selected model automatically when you save. Downloads resume if interrupted.</p>
+      <p className="text-xs text-muted">Live Spec starts the selected model automatically when you save. Downloads resume if interrupted.</p>
     </div>
   );
 }

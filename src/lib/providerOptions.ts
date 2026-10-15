@@ -1,5 +1,5 @@
 // Model, effort and label rules for the provider settings, kept pure so they're
-// testable. Mirrors `Effort` / `ClaudeAuth` in crates/livebrainstorm-core/src/settings.rs.
+// testable. Mirrors `Effort` / `ClaudeAuth` in crates/livespec-core/src/settings.rs.
 import type { Effort, ProviderSettings, Settings } from "./ipc";
 
 /** Claude Code accepts these aliases, which track the latest models. */

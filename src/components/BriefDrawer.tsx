@@ -39,7 +39,7 @@ export function BriefDrawer(p: Props) {
           <p className="mb-4 text-xs text-muted">
             {p.brief
               ? `Written by ${p.brief.source} on ${when}.${p.status === "stale" ? " Files have changed since." : ""}`
-              : "LiveBrainstorm reads the project once and writes this summary, then uses it every time it reads your draft."}
+              : "Live Spec reads the project once and writes this summary, then uses it every time it reads your draft."}
           </p>
         )}
         {p.error && (
@@ -50,7 +50,7 @@ export function BriefDrawer(p: Props) {
 
         {p.building && (
           <>
-            <ol className="mb-4 space-y-0.5 font-mono text-xs text-muted" aria-label="What LiveBrainstorm is reading">
+            <ol className="mb-4 space-y-0.5 font-mono text-xs text-muted" aria-label="What Live Spec is reading">
               {p.activity.slice(-8).map((a, i) => (
                 <li key={i} className="truncate last:text-ink">
                   {a}

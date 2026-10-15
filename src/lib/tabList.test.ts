@@ -93,8 +93,8 @@ describe("titles", () => {
   });
 
   it("the window title names the active tab", () => {
-    expect(windowTitle("Checkout retry")).toBe("LiveBrainstorm — Checkout retry");
-    expect(windowTitle(null)).toBe("LiveBrainstorm");
+    expect(windowTitle("Checkout retry")).toBe("Live Spec — Checkout retry");
+    expect(windowTitle(null)).toBe("Live Spec");
   });
 });
 
@@ -135,7 +135,7 @@ describe("sidebar flag", () => {
     expect(readCollapsed("w-1", 1099, s)).toBe(true);
     expect(readCollapsed("w-1", 1100, s)).toBe(false);
     writeCollapsed("w-1", false, s);
-    expect(s.m.get("livebrainstorm.sidebar.w-1")).toBe("0");
+    expect(s.m.get("livespec.sidebar.w-1")).toBe("0");
     expect(readCollapsed("w-1", 900, s)).toBe(false);
     expect(readCollapsed("w-2", 900, s)).toBe(true);
   });

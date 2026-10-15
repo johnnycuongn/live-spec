@@ -1,5 +1,5 @@
 // The section catalogue and the streaming parser. Mirrors sections.rs in
-// crates/livebrainstorm-core: ids, order, the default set and the heading
+// crates/livespec-core: ids, order, the default set and the heading
 // alias table must match. Tolerant on purpose: small local models write
 // "**Conflicts:**" or "### Conflicts with code".
 

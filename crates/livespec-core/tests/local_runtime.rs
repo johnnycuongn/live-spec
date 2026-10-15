@@ -1,7 +1,7 @@
 //! Network test: downloads the real pinned llama.cpp build (~20-60 MB).
-//! Run with `cargo test -p livebrainstorm-core -- --ignored`.
+//! Run with `cargo test -p livespec-core -- --ignored`.
 
-use livebrainstorm_core::local::{runtime, LocalPaths};
+use livespec_core::local::{runtime, LocalPaths};
 
 #[tokio::test]
 #[ignore = "downloads the llama.cpp runtime"]

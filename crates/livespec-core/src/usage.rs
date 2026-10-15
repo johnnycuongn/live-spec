@@ -37,7 +37,7 @@ pub struct Price {
 }
 
 impl Price {
-    /// Cache writes and reads are priced at the input rate. LiveBrainstorm sets
+    /// Cache writes and reads are priced at the input rate. Live Spec sets
     /// no `cache_control`, so the API reports none today; if any appear, this errs high.
     pub fn cost(&self, u: &Usage) -> f64 {
         let input = u.input as f64 + u.cache_write as f64 + u.cache_read as f64;

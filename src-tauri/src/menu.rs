@@ -1,12 +1,12 @@
 //! The app menu. Tauri's default menu binds ⌘W to Close Window, so the whole menu is
-//! replaced. Our own items (`livebrainstorm_core::menu`) carry the frontend's action ids
+//! replaced. Our own items (`livespec_core::menu`) carry the frontend's action ids
 //! and go to the focused window as `menu { id }`; that window's `useActions` runs them.
 //! Predefined items stay native. The Edit menu keeps Undo, Redo, Cut, Copy, Paste and
 //! Select All: without them the draft `<textarea>` loses those shortcuts on macOS.
 //! Services, Hide, Hide Others and Show All (macOS), and Minimize and Zoom, are kept from
 //! Tauri's default menu, so ⌘H and ⌘M keep working.
 
-use livebrainstorm_core::menu::{self as spec, MenuItemSpec};
+use livespec_core::menu::{self as spec, MenuItemSpec};
 use tauri::menu::{
     AboutMetadata, Menu, MenuBuilder, MenuEvent, MenuItem, MenuItemBuilder, Submenu, SubmenuBuilder, WINDOW_SUBMENU_ID,
 };

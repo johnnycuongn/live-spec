@@ -1,7 +1,7 @@
-/* LiveBrainstorm: a draft and the notes beside it.
+/* Live Spec: a spec and the notes beside it.
    Minimal: neutral greys, one blue accent, the rule between the panes as the
-   only signature element. Note colours carry meaning (faults red, directions
-   blue, questions amber). Your words are set in a serif, the AI's in a sans.
+   only signature element. Note colours carry meaning (conflicts red, gaps
+   blue, ambiguities and questions amber). Your words are set in a serif, the AI's in a sans.
    Fonts are bundled (Fontsource), never fetched: the app works offline and
    the CSP in tauri.conf.json only allows 'self'. */
 

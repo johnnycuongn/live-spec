@@ -1,6 +1,6 @@
 // A tab's history of analyses (newest first, at most 5): an older snapshot
 // shown as notes, and the `‹ 2 of 5 ›` header. Snapshot mirrors
-// sessions::Snapshot in crates/livebrainstorm-core.
+// sessions::Snapshot in crates/livespec-core.
 import type { AnalysisState } from "./analysisState";
 import type { Snapshot } from "./ipc";
 

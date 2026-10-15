@@ -6,19 +6,19 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use livebrainstorm_core::agents;
-use livebrainstorm_core::analysis::{self, PreInput, PreOutcome, PRE_BUDGET};
-use livebrainstorm_core::instructions::{InstructionsView, ProjectInstructions, Template};
-use livebrainstorm_core::jev::key::KeyStatus;
-use livebrainstorm_core::jev::check::{self, CheckEvent, CheckResult};
-use livebrainstorm_core::llm::Chunk;
-use livebrainstorm_core::local::{self, catalog, download, runtime, LocalInventory};
-use livebrainstorm_core::project::explore;
-use livebrainstorm_core::project::{self, BriefStatus, StoredBrief};
-use livebrainstorm_core::sessions::{valid_id, LegacyDraft, Recorder, Tab, WindowSummary, WindowView};
-use livebrainstorm_core::settings::{ProviderSettings, Settings, Tier};
-use livebrainstorm_core::usage::{self, UsageBucket, UsageKind, UsageTag};
-use livebrainstorm_core::{prompt, sections, Error, Result};
+use livespec_core::agents;
+use livespec_core::analysis::{self, PreInput, PreOutcome, PRE_BUDGET};
+use livespec_core::instructions::{InstructionsView, ProjectInstructions, Template};
+use livespec_core::jev::key::KeyStatus;
+use livespec_core::jev::check::{self, CheckEvent, CheckResult};
+use livespec_core::llm::Chunk;
+use livespec_core::local::{self, catalog, download, runtime, LocalInventory};
+use livespec_core::project::explore;
+use livespec_core::project::{self, BriefStatus, StoredBrief};
+use livespec_core::sessions::{valid_id, LegacyDraft, Recorder, Tab, WindowSummary, WindowView};
+use livespec_core::settings::{ProviderSettings, Settings, Tier};
+use livespec_core::usage::{self, UsageBucket, UsageKind, UsageTag};
+use livespec_core::{prompt, sections, Error, Result};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tokio::sync::oneshot;
@@ -485,7 +485,7 @@ pub async fn move_tab(app: AppHandle, tab_id: String, to: Option<String>) -> Res
     }
     cancel_task(&state.analyses, &tab_id); // drops the claude children too (kill_on_drop)
     if let Err(e) = state.sessions.activate(&to, &tab_id) {
-        eprintln!("LiveBrainstorm: moved tab {tab_id} to {to} but couldn't show it there: {e}");
+        eprintln!("Live Spec: moved tab {tab_id} to {to} but couldn't show it there: {e}");
     }
     match app.get_webview_window(&to) {
         Some(window) => {

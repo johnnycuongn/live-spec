@@ -1,18 +1,18 @@
 [package]
-name = "livebrainstorm"
+name = "livespec"
 version = "0.1.0"
 edition = "2021"
-description = "Brainstorm alongside AI that understands your project"
+description = "Write a spec beside an AI that has read your project"
 
 [lib]
-name = "livebrainstorm_lib"
+name = "livespec_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-livebrainstorm-core = { path = "../crates/livebrainstorm-core" }
+livespec-core = { path = "../crates/livespec-core" }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-window-state = "2"

@@ -1,5 +1,5 @@
 // Session-instruction rules, kept pure so they're testable. Types mirror
-// crates/livebrainstorm-core/src/instructions.rs; the cap mirrors
+// crates/livespec-core/src/instructions.rs; the cap mirrors
 // MAX_INSTRUCTION_CHARS in prompt.rs.
 import type { ProjectInstructions, Template } from "./ipc";
 import { isDefaultSections, normalizeSections } from "./sections";

@@ -1,13 +1,13 @@
 //! Builds this repo's brief for real with Claude Code (sonnet; uses the
 //! subscription, several minutes): 1 explorer vs 4 explorers plus merge.
-//!   cargo test -p livebrainstorm-core --test brief_live -- --ignored --nocapture
+//!   cargo test -p livespec-core --test brief_live -- --ignored --nocapture
 
 use std::path::Path;
 use std::time::Instant;
 
-use livebrainstorm_core::llm::{Chunk, ClaudeCli, Provider};
-use livebrainstorm_core::project::{explore, scan};
-use livebrainstorm_core::{agents, prompt, shell_env};
+use livespec_core::llm::{Chunk, ClaudeCli, Provider};
+use livespec_core::project::{explore, scan};
+use livespec_core::{agents, prompt, shell_env};
 
 const SECTIONS: [&str; 8] =
     ["Purpose", "Architecture", "Modules", "Core flows", "Conventions", "Existing features", "Gaps and TODOs", "Glossary"];

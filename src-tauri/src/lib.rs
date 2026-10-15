@@ -1,4 +1,4 @@
-//! Tauri shell: wires `livebrainstorm-core` to the webview. Kept thin on purpose;
+//! Tauri shell: wires `livespec-core` to the webview. Kept thin on purpose;
 //! logic that doesn't need Tauri lives in the core crate.
 
 mod commands;
@@ -36,11 +36,18 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             let config_dir = app.path().app_config_dir()?;
+            // First launch after the rename: the old identifier's folder and keys come along.
+            livespec_core::migrate::move_app_dirs(
+                &[data_dir.clone(), config_dir.clone()],
+                livespec_core::migrate::OLD_IDENTIFIER,
+                |m| eprintln!("Live Spec: {m}"),
+            );
+            secrets::migrate_from_old_service();
             app.manage(AppState::new(&data_dir, &config_dir));
             start_usage_tasks(app.handle());
             // One window per workspace window; tauri.conf.json declares none.
             let ids = app.state::<AppState>().sessions.windows_to_open().unwrap_or_else(|e| {
-                eprintln!("LiveBrainstorm: couldn't read the saved windows: {e}");
+                eprintln!("Live Spec: couldn't read the saved windows: {e}");
                 vec!["w-1".to_owned()]
             });
             // One window failing to build must not stop the rest; with none on screen the
@@ -51,7 +58,7 @@ pub fn run() {
                 match windows::build(app.handle(), &id) {
                     Ok(_) => built += 1,
                     Err(e) => {
-                        eprintln!("LiveBrainstorm: couldn't open window {id}: {e}");
+                        eprintln!("Live Spec: couldn't open window {id}: {e}");
                         last_error = Some(e);
                     }
                 }
@@ -101,7 +108,7 @@ pub fn run() {
             commands::stop_local,
         ])
         .build(tauri::generate_context!())
-        .expect("failed to build LiveBrainstorm")
+        .expect("failed to build Live Spec")
         .run(|app, event| {
             if let RunEvent::Exit = event {
                 // Don't leave a multi-GB model server running after quit.

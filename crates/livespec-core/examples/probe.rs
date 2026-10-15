@@ -1,8 +1,8 @@
-//! See exactly what LiveBrainstorm would retrieve for a draft. Handy for tuning.
+//! See exactly what Live Spec would retrieve for a draft. Handy for tuning.
 //!
-//!   cargo run -p livebrainstorm-core --example probe -- <project-dir> "<draft text>"
+//!   cargo run -p livespec-core --example probe -- <project-dir> "<draft text>"
 
-use livebrainstorm_core::project::{retrieve, scan};
+use livespec_core::project::{retrieve, scan};
 
 fn main() {
     let mut args = std::env::args().skip(1);

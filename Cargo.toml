@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/livebrainstorm-core", "src-tauri"]
+members = ["crates/livespec-core", "src-tauri"]
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

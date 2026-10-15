@@ -1,10 +1,12 @@
 //! Secrets live in the OS keychain (Keychain / Credential Manager / Secret
 //! Service), never in settings.json or the webview.
 
-use livebrainstorm_core::jev::key::{pick_key, KeySource};
-use livebrainstorm_core::{Error, Result};
+use livespec_core::jev::key::{pick_key, KeySource};
+use livespec_core::{Error, Result};
 
-const SERVICE: &str = "app.livebrainstorm.desktop";
+const SERVICE: &str = "app.livespec.desktop";
+/// The service the app saved under before it became Live Spec; read once to carry keys over.
+const OLD_SERVICE: &str = "app.livebrainstorm.desktop";
 const ACCOUNT: &str = "anthropic-api-key";
 const JEV_ACCOUNT: &str = "typesafe-api-key";
 const JEV_ENV: &str = "TYPESAFE_API_KEY";
@@ -47,6 +49,29 @@ fn set_secret(account: &str, key: &str, what: &str) -> Result<()> {
     result.map_err(|e| Error::Provider(format!("Couldn't save the {what} to the keychain: {e}")))
 }
 
+/// First launch after the rename: a key saved under the old service name is
+/// copied to the new one. The old entry stays. macOS may ask once to allow
+/// the new app to read the old item. Never fails the launch.
+pub fn migrate_from_old_service() {
+    for (account, what) in [(ACCOUNT, "API key"), (JEV_ACCOUNT, "TypeSafe key")] {
+        if !matches!(keychain_get(account), Ok(None)) {
+            continue; // already there, or the keychain is unavailable
+        }
+        let old = match keyring::Entry::new(OLD_SERVICE, account).and_then(|e| e.get_password()) {
+            Ok(key) => key,
+            Err(keyring::Error::NoEntry) => continue,
+            Err(e) => {
+                eprintln!("Live Spec: couldn't read the {what} saved by LiveBrainstorm: {e}");
+                continue;
+            }
+        };
+        match set_secret(account, &old, what) {
+            Ok(()) => eprintln!("Live Spec: carried the {what} over from LiveBrainstorm"),
+            Err(e) => eprintln!("Live Spec: {e}"),
+        }
+    }
+}
+
 /// The TypeSafe key: Keychain, then `TYPESAFE_API_KEY`, then (debug builds
 /// only) the repo's `.env.local`. It never crosses IPC.
 pub fn jev_key() -> Option<String> {
@@ -61,7 +86,7 @@ pub fn jev_key_with_source() -> Option<(String, KeySource)> {
 #[cfg(debug_assertions)]
 fn dev_env_file_key() -> Option<String> {
     let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.env.local"));
-    livebrainstorm_core::env_file::read_value(path, JEV_ENV)
+    livespec_core::env_file::read_value(path, JEV_ENV)
 }
 
 #[cfg(not(debug_assertions))]

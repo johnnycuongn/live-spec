@@ -1,5 +1,5 @@
 //! Claude via the Messages API with the user's own API key.
-//! This is the path to use if you ever distribute LiveBrainstorm to other people.
+//! This is the path to use if you ever distribute Live Spec to other people.
 
 use serde_json::{json, Value};
 
@@ -21,7 +21,7 @@ pub struct AnthropicApi {
 }
 
 /// The request body. `output_config` only when an effort is set, so "Default"
-/// sends exactly what LiveBrainstorm sent before effort existed.
+/// sends exactly what Live Spec sent before effort existed.
 fn body(model: &str, effort: Option<Effort>, req: &ChatRequest) -> Value {
     let mut body = json!({
         "model": model,

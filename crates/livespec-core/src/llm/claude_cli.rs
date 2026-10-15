@@ -4,7 +4,7 @@
 //! OAuth inside Claude Code and claude.ai; third-party apps must not offer
 //! Claude.ai login or reuse those tokens. So we never touch credentials: we run
 //! the unmodified `claude` binary, which uses whatever login the user already
-//! has. Fine for personal use. If LiveBrainstorm is ever shipped to other people, they
+//! has. Fine for personal use. If Live Spec is ever shipped to other people, they
 //! should use the API-key provider instead.
 
 use std::path::PathBuf;
@@ -169,7 +169,7 @@ impl ClaudeCli {
 
 fn cli_error(result_text: Option<&str>, stderr: &str) -> String {
     if stderr.contains("unknown option") {
-        return "Claude Code is too old for LiveBrainstorm. Update it with `claude update`.".into();
+        return "Claude Code is too old for Live Spec. Update it with `claude update`.".into();
     }
     let detail = result_text.filter(|t| !t.trim().is_empty()).unwrap_or(stderr).trim();
     if detail.contains("Invalid API key") {
@@ -453,7 +453,7 @@ mod tests {
     fn errors_say_what_to_do() {
         assert_eq!(
             cli_error(None, "error: unknown option '--effort'"),
-            "Claude Code is too old for LiveBrainstorm. Update it with `claude update`."
+            "Claude Code is too old for Live Spec. Update it with `claude update`."
         );
         assert_eq!(
             cli_error(Some("Invalid API key · Fix external API key"), ""),

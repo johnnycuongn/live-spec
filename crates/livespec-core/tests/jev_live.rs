@@ -1,16 +1,16 @@
 //! Calls the real TypeSafe API: a gate-style Noul and a check-style Choice,
 //! three rounds each, printing latency so phase 2 can size its time budget.
 //! Needs TYPESAFE_API_KEY in the environment or in the repo's .env.local:
-//!   cargo test -p livebrainstorm-core --test jev_live -- --ignored --nocapture
+//!   cargo test -p livespec-core --test jev_live -- --ignored --nocapture
 
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use livebrainstorm_core::analysis::{pre_phase, PreInput, PreOutcome, PRE_BUDGET};
-use livebrainstorm_core::env_file;
-use livebrainstorm_core::jev::{check, gate, Jev, DEFAULT_MODEL};
-use livebrainstorm_core::project::{retrieve, scan, Snippet};
+use livespec_core::analysis::{pre_phase, PreInput, PreOutcome, PRE_BUDGET};
+use livespec_core::env_file;
+use livespec_core::jev::{check, gate, Jev, DEFAULT_MODEL};
+use livespec_core::project::{retrieve, scan, Snippet};
 use serde_json::json;
 
 fn key() -> Option<String> {
