@@ -35,6 +35,10 @@
 </p>
 
 <p align="center">
+  <img src="docs/screenshots/demo.gif" width="900" alt="Live Spec demo: typing a one-line spec for a dark mode toggle, then the notes streaming in with its intent, conflicts with the code and gaps">
+</p>
+
+<p align="center">
   <img src="docs/screenshots/notes.png" width="900" alt="Live Spec: a spec on the left, and on the right the notes Live Spec wrote about it, flagging three conflicts with the project's code, the gaps and the ambiguities">
 </p>
 <p align="center"><sub>Real notes from Live Spec (Claude Code, haiku) on a spec for this repo: it catches that the spec reverses the stateless design and stores per-tab data in the wrong place.</sub></p>
