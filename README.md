@@ -186,6 +186,6 @@ cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings
 
 ## Further reading on spec-driven development
 
-- Addy Osmani, [How to write a good spec for AI agents](https://addyosmani.com/blog/good-spec/)
+- Addy Osmani, How to write a good spec for AI agents ([blog](https://addyosmani.com/blog/good-spec/) · [Substack](https://addyo.substack.com/p/how-to-write-a-good-spec-for-ai-agents))
 - GitHub, [Spec Kit](https://github.github.com/spec-kit/) and its [spec-driven development guide](https://github.com/github/spec-kit/blob/main/spec-driven.md)
 - Kiro, [Specs](https://kiro.dev/docs/specs/)
